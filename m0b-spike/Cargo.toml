@@ -1,0 +1,15 @@
+[package]
+name = "m0b-spike"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# THROWAWAY M0b spike — Linux/KDE-Wayland on_render bridge via ext-data-control.
+# Built and run on the Fedora/KDE box (Linux-only deps); authored on Windows and
+# scp'd over. Not committed.
+
+[dependencies]
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "macros", "sync"] }
+rustix = { version = "1", features = ["pipe"] }
