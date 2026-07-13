@@ -67,7 +67,10 @@ toggles. Thin; drives Policy and reports state.
 ## Platform boundary — the adapter contract
 
 This signature is what *travels*; lock its shape. Per-OS mechanics are
-`[CRYSTALLIZE: platform milestone]`. Illustrative (final types pinned at milestone):
+`[CRYSTALLIZE: platform milestone]`; empirical findings from the platform spikes
+(what each OS actually does — forced eager renders, retry counts, format choices)
+are recorded in `PLATFORM-NOTES.md` and feed these decisions. Illustrative (final
+types pinned at milestone):
 
 ```rust
 /// One implementation per platform. Must be expressible for Windows
@@ -84,10 +87,14 @@ trait ClipboardAdapter {
     /// real bytes now (so the OS historian can record it).
     fn set_eager(&self, offer: &Offer, payload: Payload) -> Result<()>;
 
-    /// THE inversion. The OS asks for one format of the current promise. The
-    /// adapter must block the OS (synchronously, on its platform-affine thread)
-    /// while core fetches the bytes over the network (async), then supply them
-    /// — or time out into a graceful paste-fail.
+    /// THE inversion. The OS asks for one format of the current promise; core
+    /// fetches the bytes over the network (async) and supplies them, or times out
+    /// into a graceful paste-fail.
+    /// NOTE (M0 Finding D — see PLATFORM-NOTES.md): this must be **deferred/async**,
+    /// NOT the synchronous `Fn(FormatReq) -> RenderResult` sketched here. The two OSes
+    /// impose opposite threading rules — Windows *must* block its platform thread
+    /// awaiting the bytes; Wayland *must not* block its dispatch thread (it hands off
+    /// the fd and writes it from a task). Final shape pinned in M1.
     fn on_render(&self, cb: impl Fn(FormatReq) -> RenderResult);
 
     /// Files are by-reference everywhere: write incoming bytes to the staging

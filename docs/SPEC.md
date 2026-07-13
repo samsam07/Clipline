@@ -128,9 +128,13 @@ Gate signal-source bindings (Apollo command hooks, scripts, manual): **Phase 2**
 - **Text** — UTF-8 on the wire; rebuild platform variants at paste.
 - **Images** — normalize to PNG on the wire; rebuild `CF_DIB` / `image/png` per-OS at
   paste.
-- **Files** — by-reference everywhere (`CF_HDROP` / `text/uri-list`). Read source bytes
-  on demand; materialize destination-local copies; advertise local refs. Staging-dir
-  layout + cleanup `[CRYSTALLIZE: file milestone]`.
+- **Files** — by-reference everywhere; bytes move only on a real paste. Read source
+  bytes on demand; materialize destination-local copies; advertise local refs. Per-OS
+  mechanism (M0 Finding C, see `PLATFORM-NOTES.md`): **Windows outbound uses
+  `CFSTR_FILEDESCRIPTORW` + `CFSTR_FILECONTENTS`** (virtual files — a `CF_HDROP`
+  promise is force-materialized at *copy* time by clipboard monitors); **Linux uses
+  `text/uri-list`** (analog behavior TBD in M0b). Staging-dir layout + cleanup
+  `[CRYSTALLIZE: file milestone]`.
 - **Rich text (HTML)** — `text/html` ↔ `CF_HTML` codec (the byte-offset preamble).
   Owning milestone `[CRYSTALLIZE: html milestone]`.
 - **RTF** — **Phase 2**.

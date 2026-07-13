@@ -43,8 +43,13 @@ one is wrong, *stop and ask the human* — do not silently re-decide.
 7. **Transport: TLS-over-TCP, two connections per peer (control + bulk), one
    listening port.** Control plane is never throttled. Bulk transfers are serial
    (no parallelism until Phase 3) and throttleable.
-8. **Files are by-reference everywhere** (`CF_HDROP` / `text/uri-list`). The
+8. **Files are by-reference everywhere** — bytes move only on a real paste; the
    destination materializes local copies and advertises *local* refs at paste.
+   *Per-OS mechanism (refined by M0 Finding C — see `PLATFORM-NOTES.md`):* Windows
+   outbound promises use the shell virtual-file model **`CFSTR_FILEDESCRIPTORW` +
+   `CFSTR_FILECONTENTS`**, **not `CF_HDROP`** — a `CF_HDROP` promise is force-
+   materialized at *copy* time by clipboard monitors, which breaks laziness. Linux
+   uses `text/uri-list` (analog force-read behavior TBD in M0b).
 9. **Preserve the whole format set across the wire**; the destination picks. Never
    pre-flatten formats at the source.
 10. **Discovery v1 = explicit endpoints** (config by IP, Vox-style). mDNS/hybrid is

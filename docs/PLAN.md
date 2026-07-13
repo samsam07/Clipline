@@ -5,11 +5,17 @@ For Clipline the uncertainty is **not** the mesh (well-trodden) — it is the pl
 adapter and the lazy-render sync↔async bridge. Prove that before building anything on
 top of it.
 
-Linux is in scope **from the start** (dev on a Windows box, remoting into a Linux box
-to test) so the adapter trait is validated against *both* OS models before the protocol
-hardens — this is what keeps "Windows-first" from degrading into a Linux redesign later.
+Linux was validated **from the start** in M0 (dev on a Windows box, remoting into a
+Linux box) so the adapter trait is proven expressible against *both* OS models before
+the protocol hardens — which is precisely what now lets implementation proceed
+**Windows-first** (see "Post-M0 sequencing") without degrading into a Linux redesign
+later.
 
-## M0 — Prove `on_render` on both OSes, no networking
+## M0 — Prove `on_render` on both OSes, no networking  ✅ DONE — GO
+
+**Outcome: GO on both Windows and KDE-Wayland.** The lazy-render bridge holds and
+fails gracefully; five cross-validated platform findings (A–E) are recorded in
+`PLATFORM-NOTES.md` and feed M1. See "Post-M0 sequencing" below.
 
 The make-or-break. With **zero mesh code**, prove the `ClipboardAdapter::on_render`
 inversion works on:
@@ -24,18 +30,41 @@ Exit criterion: copy a placeholder in-process on each OS, paste in a real app
 fails cleanly without hanging the app. **If this bridge doesn't hold, the lazy design
 must be reworked — stop and redesign here, not later.**
 
-## M1 — Adapter trait in core (injection seam) + file materialization
+## Post-M0 sequencing (decided after M0)
 
-Lock the `ClipboardAdapter` contract against what M0 learned (it must stay expressible
-for Windows, X11, and Wayland). **Define the trait in `clipline-core`; implement the
-desktop adapters in the `clipline` binary and inject them** — validating the reuse seam
-(CONVENTIONS.md) from the first milestone that has it, rather than refactoring it in
-later. Core must compile and be drivable with a mock/test adapter, no platform clipboard
-crate in its dependency tree.
+M0 validated the `on_render` bridge and the adapter's expressibility on **both** OS
+models, so implementation now proceeds **Windows-first**; the **Linux adapter is
+deferred to a dedicated later milestone (M-Linux)**. That milestone owns:
+- the Wayland **`ext-data-control`** source adapter (KWin advertises
+  `ext_data_control_manager_v1`; the older wlr protocol is absent here) and the X11
+  owner impl;
+- **FUSE-backed lazy files** (`PLATFORM-NOTES.md` Finding E) — the FreeRDP-proven
+  decoupling so file bytes stream as ordinary file I/O, not inside the ~1 s clipboard
+  read budget;
+- verifying whether **`wl-clipboard-rs`** (named in CONVENTIONS) can serve *lazily*
+  per-request, or whether the raw `wayland-client` + `ext-data-control` approach the
+  M0b spike used is required (a CONVENTIONS decision);
+- **re-running the M0b latency tests**, including the pending empirical confirm of the
+  ~1 s Qt boundary (Finding E, source-pinned but not yet bracketed on the metal): in
+  Kate, `--delay-ms 900` should paste and `--delay-ms 1100` should not.
 
-Implement `materialize_files` + staging on both OSes: read source file bytes, write to
-staging, advertise destination-local refs (`CF_HDROP` / `text/uri-list`). Text + image
-format round-trip (PNG-on-wire). X11 owner impl can land here or M-late if time-boxed.
+## M1 — Adapter trait in core (injection seam) + Windows file materialization
+
+Lock the `ClipboardAdapter` contract against what M0 learned. It must be
+**deferred/async — not a synchronous callback** — so it is expressible for *both*
+Windows (block the pump thread) and Wayland (non-blocking fd-serve): see
+`PLATFORM-NOTES.md` Finding D. **Define the trait in `clipline-core`; implement and
+inject the Windows adapter** (Linux deferred — see Post-M0 sequencing) — validating the
+reuse seam (CONVENTIONS.md) from the first milestone that has it. Core must compile and
+be drivable with a mock/test adapter, no platform clipboard crate in its dependency
+tree — and the mock stands in for the not-yet-written Linux adapter, keeping the trait
+honest for both.
+
+Implement `materialize_files` + staging on **Windows**: serve files lazily via
+`CFSTR_FILEDESCRIPTORW` + `CFSTR_FILECONTENTS` (virtual files — **not** `CF_HDROP`,
+which clipboard monitors force-materialize at copy; see `PLATFORM-NOTES.md` Finding C).
+Settle locked decision #8's Windows mechanism here. Text + image format round-trip
+(PNG-on-wire).
 
 ## M2 — Mesh transport (control plane)
 
@@ -97,7 +126,9 @@ operation confirmed (no GUI required for daemon use).
 - Wire field layouts / framing / encoding / error codes → M3 (protocol).
 - Eager-size threshold value → M6.
 - Throttle rate(s) → M6.
-- Per-OS render mechanics specifics → M0/M1 (platform).
+- Per-OS render mechanics specifics → M0/M1 (platform). Empirical spike findings
+  live in `PLATFORM-NOTES.md` (incl. the `CF_HDROP` vs. `CFSTR_FILEDESCRIPTOR`
+  question that touches locked decision #8).
 - Staging-dir layout + cleanup → M1 (file).
 - `Strict` safety policy specifics → M6 (policy).
 - X11 crate choice → M1 (platform).
