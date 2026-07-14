@@ -503,7 +503,7 @@ fn do_set_eager(
 }
 
 /// Best-effort local-copy notification (ARCHITECTURE.md `watch`). M1 wires the channel
-/// and suppresses our own copies; full format enumeration is M3 (when core consumes it).
+/// and suppresses our own copies; full format enumeration is M2 (when core consumes it).
 fn handle_clipboard_update(shared: &PumpShared, hwnd: HWND) {
     unsafe {
         let owner = GetClipboardOwner().unwrap_or(HWND(std::ptr::null_mut()));

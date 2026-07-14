@@ -14,7 +14,7 @@ use crate::protocol::{
     ContentHash, FormatDesc, LocalCopy, Mime, Offer, OriginId, Payload, SensitivityHint, Seq,
 };
 
-/// A [`RenderSource`] that produces bytes after a delay — stands in for the M4 network
+/// A [`RenderSource`] that produces bytes after a delay — stands in for the M3 network
 /// fetch (fast fetch vs. one that overruns the adapter deadline).
 struct DelayedOk {
     delay: Duration,
@@ -127,7 +127,7 @@ async fn adapter_is_object_safe() {
 }
 
 /// `watch` carries locally-detected copies (shape locked in M1; core-side consumption
-/// is M3).
+/// is M2).
 #[tokio::test]
 async fn watch_delivers_local_copies() {
     let adapter = MockAdapter::new();

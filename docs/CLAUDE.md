@@ -51,7 +51,7 @@ one is wrong, *stop and ask the human* — do not silently re-decide.
    outbound promises use the shell virtual-file model **`CFSTR_FILEDESCRIPTORW` +
    `CFSTR_FILECONTENTS`** via an `IDataObject`, **not `CF_HDROP`** — a `CF_HDROP`
    promise is force-materialized at *copy* time by clipboard monitors, which breaks
-   laziness. `FILECONTENTS` is served per-file (and, in M4, per-range) through the same
+   laziness. `FILECONTENTS` is served per-file (and, in M3, per-range) through the same
    lazy-render bridge — **no staging dir**. Linux uses `text/uri-list` pointing at a
    **FUSE mount** that streams on read (no copy either; deferred to M-Linux).
 9. **Preserve the whole format set across the wire**; the destination picks. Never

@@ -134,7 +134,7 @@ Gate signal-source bindings (Apollo command hooks, scripts, manual): **Phase 2**
   mechanism (M0 Finding C, see `PLATFORM-NOTES.md`): **Windows outbound uses
   `CFSTR_FILEDESCRIPTORW` + `CFSTR_FILECONTENTS`** via an `IDataObject` (virtual files —
   a `CF_HDROP` promise is force-materialized at *copy* time by clipboard monitors),
-  serving `FILECONTENTS` per-file (and, in M4, per-range) through the lazy-render
+  serving `FILECONTENTS` per-file (and, in M3, per-range) through the lazy-render
   bridge; **Linux uses `text/uri-list`** pointing at a **FUSE mount** that streams on
   read (M-Linux). No staging dir on either OS. A file group is carried in the offer as
   a manifest of `{ rel_path, size }` entries; contents are fetched by file index.

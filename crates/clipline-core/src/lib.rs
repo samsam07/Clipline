@@ -11,7 +11,7 @@
 //! **deferred** render inversion (M0 Finding D; see [`adapter`]) — and proves core is
 //! drivable by a mock adapter with no platform crate in its dependency tree. The head
 //! manager / transfer engine / mesh are later milestones; here the [`driver`] provides
-//! only the render-answering loop, with the network fetch mocked (arrives in M4).
+//! only the render-answering loop, with the network fetch mocked (arrives in M3).
 
 pub mod adapter;
 pub mod driver;

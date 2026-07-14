@@ -4,9 +4,9 @@
 //!
 //! In M1 the byte producer is abstracted behind [`RenderSource`]; the real
 //! implementation — a point-to-point bulk fetch from the origin (SPEC.md §1 "Fetch";
-//! ARCHITECTURE.md paste flow) — lands in **M4**, when the Transfer Engine implements
+//! ARCHITECTURE.md paste flow) — lands in **M3**, when the Transfer Engine implements
 //! `RenderSource`. Until then a mock source stands in (mirroring how M0 simulated the
-//! network with a delay). This loop itself is real and is reused unchanged in M4.
+//! network with a delay). This loop itself is real and is reused unchanged in M3.
 
 use std::future::Future;
 
@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 
 use crate::adapter::{FormatReq, RenderRequest, RenderResult};
 
-/// Produces the bytes for one forced render. In M4 this is the network fetch; in M1
+/// Produces the bytes for one forced render. In M3 this is the network fetch; in M1
 /// it is mocked. Kept as a generic bound (never a trait object) so `render` can be a
 /// plain `async fn` via return-position `impl Future` — no `async-trait` needed.
 pub trait RenderSource {
@@ -28,7 +28,7 @@ pub trait RenderSource {
 /// its request stream (adapter dropped / shutting down).
 ///
 /// Serial by construction here (one render resolved at a time), which is fine for M1;
-/// M4 turns each paste into a **detached job** (SPEC.md §4) so a slow fetch can't head-
+/// M3 turns each paste into a **detached job** (SPEC.md §4) so a slow fetch can't head-
 /// of-line-block another paste. The `reply.send` returning `Err` is the graceful path:
 /// it means the adapter already timed out and dropped the receiver (D2) — we discard.
 pub async fn run_render_loop<S>(mut requests: mpsc::UnboundedReceiver<RenderRequest>, source: S)

@@ -2,7 +2,7 @@
 //! terms of (SPEC.md §1, §9; ARCHITECTURE.md "State" / "Wire shape").
 //!
 //! M1 pins only the **Rust shape** of these types — enough to lock the adapter
-//! trait. Their **wire layout / framing / encoding is deferred to M3**
+//! trait. Their **wire layout / framing / encoding is deferred to M2**
 //! (`[CRYSTALLIZE: protocol milestone]`), as are the concrete identity of
 //! `OriginId` and the hash algorithm of `ContentHash`. Field *names* here are the
 //! ones fixed in SPEC.md / ARCHITECTURE.md and are reused verbatim (anti-drift rule,
@@ -13,7 +13,7 @@ use std::path::PathBuf;
 /// Monotonic per-origin sequence number. Newest offer wins = highest `seq`; ties
 /// broken by `origin_id` (SPEC.md §1 ordering; locked decision #3).
 ///
-/// Placeholder width — final encoding is `[CRYSTALLIZE: protocol milestone]` (M3).
+/// Placeholder width — final encoding is `[CRYSTALLIZE: protocol milestone]` (M2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Seq(pub u64);
 
@@ -22,13 +22,13 @@ pub struct Seq(pub u64);
 /// tiebreak.
 ///
 /// Placeholder representation — the real identity type (and whether it is derived
-/// from an address, a name, or a key) is `[CRYSTALLIZE: protocol milestone]` (M3;
+/// from an address, a name, or a key) is `[CRYSTALLIZE: protocol milestone]` (M2;
 /// pairing/identity keys are Phase 2 per CLAUDE.md scope).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OriginId(pub u64);
 
 /// Content hash carried by an offer (SPEC.md §1). Algorithm/width is
-/// `[CRYSTALLIZE: protocol milestone]` (M3); modelled as opaque bytes for now.
+/// `[CRYSTALLIZE: protocol milestone]` (M2); modelled as opaque bytes for now.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ContentHash(pub Vec<u8>);
 
@@ -98,7 +98,7 @@ pub struct Offer {
 }
 
 /// The actual bytes of one format, produced on demand for a render (the fetch
-/// result in M4). Text = UTF-8 bytes; image = PNG bytes; a file's contents = raw
+/// result in M3). Text = UTF-8 bytes; image = PNG bytes; a file's contents = raw
 /// bytes (SPEC.md §9). Never logged (CONVENTIONS.md).
 #[derive(Clone, PartialEq, Eq)]
 pub struct Payload {
@@ -123,7 +123,7 @@ impl std::fmt::Debug for Payload {
 }
 
 /// OS sensitivity hint attached to a locally-detected copy, for the safety layer
-/// (SPEC.md §7 `RespectHints`). Consuming this is M6; M1 only carries it.
+/// (SPEC.md §7 `RespectHints`). Consuming this is M5; M1 only carries it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SensitivityHint {
     /// No confidential-content tag observed.
@@ -134,7 +134,7 @@ pub enum SensitivityHint {
 
 /// A local copy detected by the adapter's `watch` (ARCHITECTURE.md copy flow —
 /// `LocalCopy { formats, sizes, sensitivity_hint }`; sizes live inside `FormatDesc`).
-/// No bytes. Core-side consumption (→ build `Offer`, broadcast) is M3.
+/// No bytes. Core-side consumption (→ build `Offer`, broadcast) is M2.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalCopy {
     pub formats: Vec<FormatDesc>,
@@ -144,4 +144,4 @@ pub struct LocalCopy {
 // NOTE (M1 decision — streaming, mstsc-style): there are no `FileBytes` / `LocalRef`
 // types. Files are never materialized to a local staging copy; each file's contents are
 // served on demand through the render inversion (a `Payload` keyed by `FormatReq.file_idx`,
-// and a byte range in M4), streaming origin→destination. See locked decision #8.
+// and a byte range in M3), streaming origin→destination. See locked decision #8.

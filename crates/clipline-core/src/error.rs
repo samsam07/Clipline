@@ -14,7 +14,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum RenderError {
     /// The origin of the requested `{origin_id, seq, format}` is gone / unreachable
-    /// (SPEC.md §5 — the unavoidable origin-vanishes race). Real fetch lands in M4.
+    /// (SPEC.md §5 — the unavoidable origin-vanishes race). Real fetch lands in M3.
     #[error("origin unavailable for requested format")]
     Unavailable,
 

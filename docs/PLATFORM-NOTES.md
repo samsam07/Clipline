@@ -32,7 +32,7 @@ never cached** — so every listener that asks re-fires it. A *successful* rende
 populates real bytes once and all later readers hit the cache (confirmed: happy-path
 runs showed exactly one render per format).
 
-*Consequence / direction (M1/M4):* cache the *failure* too — track already-failed
+*Consequence / direction (M1/M3):* cache the *failure* too — track already-failed
 `{origin_id, seq, format}` and **fast-fail** subsequent forced renders instead of
 re-running the fetch. Our own on-render timeout can be generous (Windows tolerates up
 to ~30 s), unlike Wayland (Finding E).
@@ -60,7 +60,7 @@ does **not** hold for text on Windows.
   don't eliminate forced reads. (There is also a legacy `"Clipboard Viewer Ignore"`
   format with the same voluntary status.)
 
-*Direction (owning milestone M6 eager-threshold / capture-mode):* accept that
+*Direction (owning milestone M5 eager-threshold / capture-mode):* accept that
 text/images (small historizable formats) are effectively **eager on copy** on
 Windows; that already matches the eager-threshold design for *small* payloads. For
 text **above** the eager threshold (the case flagged by the human), we cannot make

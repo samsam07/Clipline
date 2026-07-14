@@ -11,6 +11,11 @@ the protocol hardens — which is precisely what now lets implementation proceed
 **Windows-first** (see "Post-M0 sequencing") without degrading into a Linux redesign
 later.
 
+**Post-M1 granularity:** the platform-adapter risk that justified fine early milestones
+is now **retired** (M0 + M1 done). Everything after M1 is **mesh** work (well-trodden),
+so those milestones are grouped more coarsely — M2 and M3 below each fold two of the
+original slices. Ordering is unchanged; only the gate boundaries moved.
+
 ## M0 — Prove `on_render` on both OSes, no networking  ✅ DONE — GO
 
 **Outcome: GO on both Windows and KDE-Wayland.** The lazy-render bridge holds and
@@ -48,7 +53,12 @@ deferred to a dedicated later milestone (M-Linux)**. That milestone owns:
   ~1 s Qt boundary (Finding E, source-pinned but not yet bracketed on the metal): in
   Kate, `--delay-ms 900` should paste and `--delay-ms 1100` should not.
 
-## M1 — Adapter trait in core (injection seam) + Windows file materialization
+## M1 — Adapter trait in core (injection seam) + Windows adapter  ✅ DONE
+
+**Outcome: DONE.** The `ClipboardAdapter` contract is locked (deferred render inversion,
+Finding D); the Windows adapter serves text, image (PNG-on-wire), and virtual files
+(`IDataObject` `FILEDESCRIPTORW`/`FILECONTENTS`, streaming — decision #8 amended). Core
+builds with **no** platform clipboard crate, driven by a mock. 10 tests green.
 
 Lock the `ClipboardAdapter` contract against what M0 learned. It must be
 **deferred/async — not a synchronous callback** — so it is expressible for *both*
@@ -68,43 +78,52 @@ dir** and **no `materialize_files`** (M1 decision — mstsc-style). A file group
 in `Offer.files`. Settle locked decision #8's Windows mechanism here. Text + image format
 round-trip (PNG-on-wire).
 
-## M2 — Mesh transport (control plane)
+## M2 — Mesh control plane + offer/promise end-to-end  (was M2 + M3)
 
-TLS-over-TCP, explicit endpoints, one listening port, per-peer **control** connection.
-`Presence`/heartbeat, peer table, connect-time `HeadQuery`/`HeadReply`. No bytes yet.
+Merged: the control plane can't be demonstrated with "no bytes," and its
+`HeadQuery`/`HeadReply` need the very message codec the offer path pins — so they are
+one milestone.
 
-## M3 — Offer/promise end-to-end (small/eager path)
+- **Transport:** TLS-over-TCP, explicit endpoints, one listening port, per-peer
+  **control** connection; `Presence`/heartbeat; peer table.
+- **Message codec:** length-prefixed frames + a compact serde codec for control
+  messages. Wire field layout / framing / encoding / error codes `[CRYSTALLIZE]` here.
+- **Offer/promise:** copy → broadcast `Offer` → peers set their head (`set_promise`, or
+  `set_eager` for small payloads riding the control plane). Echo suppression
+  (`origin_id`), ordering (highest `seq`, `origin_id` tiebreak). Connect-time
+  `HeadQuery`/`HeadReply` for late joiners.
 
-Copy → broadcast `Offer` → peers set head. Echo suppression (origin_id), ordering
-(seq + origin tiebreak). Eager small payloads ride the control plane. Wire
-field layout / framing / encoding `[CRYSTALLIZE]` here.
+Demonstrable end: copy on A → B reflects a promise on its head; a late joiner syncs.
 
-## M4 — Bulk plane + lazy fetch
+## M3 — Bulk plane + lazy fetch (the end-to-end lazy paste)  (was M4 + M5 job semantics)
 
-Second per-peer **bulk** connection. `FetchReq` keyed `{origin_id, seq, format}` →
-byte stream. Paste → detached job → fetch → adapter supplies bytes. Origin pins.
-Serial bulk transfers. Wire this into the M0 `on_render` bridge for the real
-end-to-end lazy paste.
+Second per-peer **bulk** connection. `FetchReq` keyed `{origin_id, seq, format,
+file_idx?}` → byte stream. Paste → **detached job** → fetch → adapter supplies the bytes,
+wired into the M0/M1 `on_render` bridge for the real cross-mesh lazy paste (text, image,
+and Windows `FILECONTENTS` files). **Origin pins** the requested seq's bytes; serial bulk
+transfers. Includes the job-model semantics that are just this system exercised: multiple
+pastes → multiple completing jobs, pin-survives-new-copy, explicit-abort-only
+(`SPEC.md` §4). The biggest integration — kept as its own gate.
 
-## M5 — Multi-paste, pins, no-auto-cancel, reconciliation
+## M4 — Reconciliation + edge-case coverage  (was M5 remainder)
 
-The distributed-behavior semantics from `SPEC.md` §4–§6: multiple pastes → multiple
-completing jobs; pin-survives-new-copy; explicit-abort-only; background head
-reconciliation on peer drop. Cover the edge-case table with tests.
+Background head **reconciliation** on peer drop: re-point affected heads to the latest
+still-reachable offer proactively — never a paste-time substitution (`SPEC.md` §5).
+Cover the `SPEC.md` §6 edge-case table with tests.
 
-## M6 — Capture modes + Policy knobs
+## M5 — Capture modes + Policy knobs  (was M6)
 
 `HeadCapture` / `ContinuousCapture` (eager threshold `[CRYSTALLIZE]`). Safety level
 (`Off`/`RespectHints`/`Strict`) reading OS sensitivity hints. Throttling level
 (`Unlimited`/`Throttled`/`SignalDriven`, bulk-only, token bucket; rate `[CRYSTALLIZE]`).
 Three lifecycle toggles. Gate as an abstract signal input (no source binding yet).
 
-## M7 — Control/UI + packaging
+## M6 — Control/UI + packaging  (was M7)
 
 CLI (`clipline up`, status, toggles) and system tray. Native packaging per OS. Headless
 operation confirmed (no GUI required for daemon use).
 
-## M8 — HTML format
+## M7 — HTML format  (was M8)
 
 `text/html` ↔ `CF_HTML` codec (byte-offset preamble). `[CRYSTALLIZE: html milestone]`.
 
@@ -125,13 +144,13 @@ operation confirmed (no GUI required for daemon use).
   it fights the bandwidth-politeness goal, so it stays opt-in and last.
 
 ## Deferred detail (`[CRYSTALLIZE]`, by owning milestone)
-- Wire field layouts / framing / encoding / error codes → M3 (protocol).
-- Eager-size threshold value → M6.
-- Throttle rate(s) → M6.
-- Per-OS render mechanics specifics → M0/M1 (platform). Empirical spike findings
-  live in `PLATFORM-NOTES.md` (incl. the `CF_HDROP` vs. `CFSTR_FILEDESCRIPTOR`
-  question that touches locked decision #8).
+- Wire field layouts / framing / encoding / error codes → M2 (protocol).
+- Eager-size threshold value → M5.
+- Throttle rate(s) → M5.
+- Per-OS render mechanics specifics → M0/M1 (platform) — **done** for Windows. Empirical
+  spike findings live in `PLATFORM-NOTES.md` (incl. the `CF_HDROP` vs.
+  `CFSTR_FILEDESCRIPTOR` question that resolved locked decision #8).
 - Staging-dir layout + cleanup → **dropped** (streaming, no staging — M1 decision).
   Linux FUSE mount lifecycle → M-Linux.
-- `Strict` safety policy specifics → M6 (policy).
-- X11 crate choice → M1 (platform).
+- `Strict` safety policy specifics → M5 (policy).
+- X11 crate choice → M-Linux (platform).

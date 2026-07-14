@@ -19,7 +19,7 @@
 //!
 //! So the inversion is modelled as a **request stream** (D1): the adapter emits a
 //! [`RenderRequest`] carrying a `oneshot` reply channel; core answers asynchronously
-//! (in M4, via the network fetch). Each adapter then bridges to its OS *internally* —
+//! (in M3, via the network fetch). Each adapter then bridges to its OS *internally* —
 //! Windows blocks its pump thread on the reply, Wayland writes the fd from a task —
 //! while core's contract stays identical across both. This is exactly the
 //! expressibility M0 was run to prove.
@@ -49,7 +49,7 @@ pub struct FormatReq {
 /// which the responder observes as a closed channel (D2).
 pub type RenderResult = Result<Payload, RenderError>;
 
-/// One forced render, emitted by the adapter to core. Core resolves `req` (the M4
+/// One forced render, emitted by the adapter to core. Core resolves `req` (the M3
 /// fetch) and sends the outcome back through `reply`.
 ///
 /// Dropping `reply` without sending == graceful paste-fail: the responder never
@@ -71,7 +71,7 @@ pub struct RenderRequest {
 pub trait ClipboardAdapter: Send + Sync + 'static {
     /// Stream of locally-detected copies (ARCHITECTURE.md copy flow). Yields the
     /// receiver once; core takes it at startup. Core-side consumption (→ build an
-    /// `Offer`, broadcast it) is M3 — M1 only locks the shape.
+    /// `Offer`, broadcast it) is M2 — M1 only locks the shape.
     fn watch(&self) -> mpsc::UnboundedReceiver<LocalCopy>;
 
     /// **THE inversion.** Stream of forced renders the OS raises against the current
@@ -87,12 +87,12 @@ pub trait ClipboardAdapter: Send + Sync + 'static {
 
     /// Continuous mode, payload under the eager threshold: set the head with real bytes
     /// now, so the OS historian can record it (SPEC.md §3). Eager-threshold value is
-    /// `[CRYSTALLIZE: head/eager milestone]` (M6); this method only carries the bytes.
+    /// `[CRYSTALLIZE: head/eager milestone]` (M5); this method only carries the bytes.
     fn set_eager(&self, offer: &Offer, payload: Payload) -> Result<(), AdapterError>;
 
     // NOTE (M1 decision — streaming, mstsc-style): there is no `materialize_files`. Files
     // are advertised by `set_promise` (carried in `Offer.files`) and their contents are
     // served on demand through `render_requests` above — keyed by `FormatReq.file_idx`
-    // (and, in M4, a byte range) — streaming origin→destination with no local staging.
+    // (and, in M3, a byte range) — streaming origin→destination with no local staging.
     // See locked decision #8 (amended M1) and `protocol::FileEntry`.
 }

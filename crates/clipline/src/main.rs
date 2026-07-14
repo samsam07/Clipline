@@ -4,7 +4,7 @@
 //!
 //! M1 Slice 1 stands up the workspace and the injection seam in core. Slice 2 adds the
 //! Windows adapter ([`platform::WinClipboardAdapter`]); this shell constructs it and
-//! runs the render-answering loop. The network fetch behind the loop lands in M4 — until
+//! runs the render-answering loop. The network fetch behind the loop lands in M3 — until
 //! then there is no `RenderSource` to serve real bytes, so the shell just logs.
 
 mod platform;
@@ -25,7 +25,7 @@ fn main() {
 
 /// Prove the injection seam from the real binary: construct the Win32 adapter and hold
 /// it as a `dyn ClipboardAdapter` (core only ever sees the trait object). Wiring it to
-/// the render loop needs M4's fetch source, so we don't run the loop here yet.
+/// the render loop needs M3's fetch source, so we don't run the loop here yet.
 #[cfg(windows)]
 fn demo_injection() {
     use std::time::Duration;

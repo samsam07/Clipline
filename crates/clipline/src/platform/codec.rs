@@ -22,7 +22,7 @@ pub fn text_to_utf16(s: &str) -> Vec<u16> {
 
 /// A `CF_UNICODETEXT` code-unit buffer -> `String`, stopping at the first NUL.
 ///
-/// Inbound half (OS format -> wire): production callers are the Send/copy path (M3)
+/// Inbound half (OS format -> wire): production callers are the Send/copy path (M2)
 /// and file materialize; for M1 it is exercised by the round-trip tests.
 #[allow(dead_code)]
 pub fn utf16_to_string(units: &[u16]) -> String {
@@ -92,7 +92,7 @@ pub fn png_to_dib(png: &[u8]) -> Result<Vec<u8>, CodecError> {
 /// DIBs in either row direction — enough for what we emit and for common producers.
 /// Palette-indexed and `BI_BITFIELDS`/compressed DIBs are out of scope for M1.
 ///
-/// Inbound half (OS format -> wire): production callers are the Send/copy path (M3);
+/// Inbound half (OS format -> wire): production callers are the Send/copy path (M2);
 /// for M1 it is exercised by the round-trip tests.
 #[allow(dead_code)]
 pub fn dib_to_png(dib: &[u8]) -> Result<Vec<u8>, CodecError> {

@@ -102,7 +102,7 @@ trait ClipboardAdapter {
     // local staging copy, so there is no `materialize_files`. A file group is advertised
     // via `set_promise` (carried in `Offer.files` as `{ rel_path, size }` entries); each
     // file's contents are served on demand through the render inversion above, keyed by
-    // `FormatReq.file_idx` (and, in M4, a byte range) — bytes stream origin→destination.
+    // `FormatReq.file_idx` (and, in M3, a byte range) — bytes stream origin→destination.
 }
 ```
 
@@ -159,7 +159,7 @@ codec for control messages; raw byte stream for bulk). Fetches are keyed
 4. Origin pins `seq`, streams the format's bytes (serially w.r.t. other bulk jobs;
    throttled if the throttle level says so).
 5. For files: the adapter serves each file's `FILECONTENTS` (per-file, and per-range in
-   M4) through the same render inversion — bytes stream origin→destination with **no
+   M3) through the same render inversion — bytes stream origin→destination with **no
    local staging**. For text/image: adapter supplies bytes directly. Timeout →
    graceful paste-fail.
 6. A second paste during step 3–5 spawns a *second independent job*; both complete.
