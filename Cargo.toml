@@ -1,0 +1,10 @@
+[workspace]
+members = ["crates/clipline-core", "crates/clipline"]
+resolver = "2"
+
+# Single static binary per platform (CONVENTIONS.md): optimize the release build.
+# (No Vox-style per-package dev override here — Clipline has no bundled C deps.)
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

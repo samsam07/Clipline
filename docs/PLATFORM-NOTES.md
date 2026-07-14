@@ -99,8 +99,9 @@ in-process pull confirmed the two-tier laziness: `FileGroupDescriptorW` served
 instantly with **no fetch**; `FileContents` served only on request, through the
 same block→async-fetch→timeout bridge. Conclusion: **outbound Windows file
 promises should use `CFSTR_FILEDESCRIPTORW` + `CFSTR_FILECONTENTS`, not
-`CF_HDROP`.** Incoming files still materialize to local staging on real paste (the
-`FileContents` fetch is where materialization happens).
+`CF_HDROP`.** Incoming file bytes are **streamed** through the `FileContents` fetch
+straight to the pasting app — **no local staging copy** (M1 decision; mstsc-style, which
+serves `FILECONTENTS` ranges on demand rather than pre-copying the file).
 
 *Tension with a locked decision:* CLAUDE.md locked decision **#8** names
 `CF_HDROP` / `text/uri-list` as the by-reference file mechanism, with the
@@ -108,10 +109,13 @@ destination "materializing local copies and advertising local refs **at paste**.
 Finding C shows `CF_HDROP` forces materialization **at copy** (under monitors),
 contradicting the "at paste" goal. Honoring #8's *intent* (lazy, materialize at
 paste) on Windows requires `CFSTR_FILEDESCRIPTORW` + `CFSTR_FILECONTENTS` instead of
-`CF_HDROP` for outbound promises. **Resolved:** decision #8 was amended (CLAUDE.md /
-SPEC.md §9 / PLAN.md M1) to adopt the virtual-file mechanism for Windows outbound,
-keeping `text/uri-list` for Linux (pending M0b). Implementation is owned by **M1**
-(adapter contract + `materialize_files`).
+`CF_HDROP` for outbound promises. **Resolved (amended twice):** decision #8 now (a)
+adopts the virtual-file mechanism for Windows outbound (keeping `text/uri-list` for
+Linux), and (b) drops the "materialize local copies / advertise local refs" step in
+favor of **streaming** — `FILECONTENTS` bytes flow origin→pasting-app on demand with
+**no staging dir** (mstsc-style; M1 decision). This also removed `materialize_files`
+from the adapter trait: file contents ride the render bridge keyed by `FormatReq.file_idx`
+(a file group is carried in `Offer.files`). Implementation is owned by **M1**.
 
 *Note:* the Linux analog (`text/uri-list` referencing real paths) has the same
 shape, and Linux lacks a standard virtual-file-contents clipboard mechanism —
@@ -168,7 +172,8 @@ the M-Linux milestone, per Post-M0 sequencing): bracket the boundary in Kate —
 
 *Why it matters:* the fetch must beat ~1 s or a paste into a normal Qt app yields
 nothing. For Clipline's **LAN + small formats** (text, small images) this is fine —
-sub-second. It bites two cases, both **M1/design** problems:
+sub-second. It bites two cases, both **M-Linux/design** problems (this is the Wayland
+paste path; the Windows adapter is M1):
 1. **Large inline payloads** (big text/image served on the fd): can't finish within
    ~1 s → serve them **eagerly** (pre-fetched, matching the SPEC §3 eager path), or
    accept graceful-empty on very large items.
@@ -179,7 +184,9 @@ sub-second. It bites two cases, both **M1/design** problems:
    clipboard timeout) when the destination reads the files. *Cross-validated:* this is
    exactly what **FreeRDP** does — its clipboard file redirection presents remote files
    as **FUSE** virtual files on Linux/Wayland (`CliprdrFuse…`), for the same
-   lazy-file-over-a-network problem. Building the FUSE layer is **M1**.
+   lazy-file-over-a-network problem. Building the FUSE layer is **M-Linux** (FUSE is
+   Linux-only; the Windows outbound file path uses `CFSTR_FILEDESCRIPTORW` +
+   `CFSTR_FILECONTENTS` and is M1).
 
 *Not a go/no-go failure:* the bridge holds — lazy render reaches real apps, and
 exceeding the budget fails gracefully (empty paste, no hang). E is a constraint to
@@ -220,14 +227,17 @@ Below ~200–500 ms the forced reads also succeed (small/fast content caches int
 history, matching the eager path). This is **gentler than Windows**, where the
 monitor's read blocks up to ~30 s and completes, forcing a full fetch.
 
-### Linux file-by-reference — resolved direction (implementation is M1)
+### Linux file-by-reference — resolved direction (implementation is M-Linux)
 `text/uri-list` carries **file paths/URIs**; contents live **on disk**, not in the
 clipboard — there is **no `CFSTR_FILECONTENTS` analog** on Wayland. So the referenced
 files must exist when the uri-list is read. The resolved strategy (see Finding E):
-**serve the uri-list immediately with URIs under a FUSE-backed staging path**, and let
-the actual bytes stream in as ordinary file I/O when the destination reads them — no
-clipboard-timeout involvement. This is the FreeRDP-proven approach. Building the FUSE
-layer + staging lifecycle is **M1**.
+**serve the uri-list immediately with URIs under a FUSE mount** (a virtual filesystem,
+**not** a pre-copied staging dir), and let the actual bytes stream in as ordinary file
+I/O when the destination reads them — no clipboard-timeout involvement. This is the
+FreeRDP-proven approach. Building the FUSE layer + its mount lifecycle is **M-Linux**
+(deferred with the rest of the Linux adapter; see PLAN.md "Post-M0 sequencing"). Windows
+needs **no staging dir at all** — `FILECONTENTS` streams per-file/per-range straight to
+the pasting app via the `IDataObject` (M1 decision; mstsc-style).
 
 ---
 

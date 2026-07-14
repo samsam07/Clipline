@@ -28,8 +28,9 @@ shape, concurrency model, and the core data flows. Atomic detail is deferred via
 
 ### Clipboard Adapter (the hard 40% — lock its contract first)
 Per-OS. Watches the local clipboard, sets the local head (as a promise or eagerly),
-serves byte requests from the OS on demand (the `on_render` inversion), and
-materializes incoming files. Three implementations behind one trait:
+and serves byte requests from the OS on demand (the `on_render` inversion) — including
+file contents, which **stream** through on demand with no local staging. Three
+implementations behind one trait:
 `Windows`, `Linux-X11`, `Linux-Wayland`. **The trait must remain expressible for
 Wayland's fd-serve model even while only Windows is implemented first** (see
 `PLAN.md` M0) — otherwise Linux becomes a redesign, not an implementation.
@@ -97,9 +98,11 @@ trait ClipboardAdapter {
     /// the fd and writes it from a task). Final shape pinned in M1.
     fn on_render(&self, cb: impl Fn(FormatReq) -> RenderResult);
 
-    /// Files are by-reference everywhere: write incoming bytes to the staging
-    /// dir and return destination-LOCAL refs to advertise on the head.
-    fn materialize_files(&self, files: Vec<FileBytes>) -> Result<Vec<LocalRef>>;
+    // NOTE (M1 decision — streaming, mstsc-style): files are NOT materialized to a
+    // local staging copy, so there is no `materialize_files`. A file group is advertised
+    // via `set_promise` (carried in `Offer.files` as `{ rel_path, size }` entries); each
+    // file's contents are served on demand through the render inversion above, keyed by
+    // `FormatReq.file_idx` (and, in M4, a byte range) — bytes stream origin→destination.
 }
 ```
 
@@ -155,8 +158,9 @@ codec for control messages; raw byte stream for bulk). Fetches are keyed
 3. Transfer Eng spawns a **detached job**, opens a bulk `FetchReq` to the origin.
 4. Origin pins `seq`, streams the format's bytes (serially w.r.t. other bulk jobs;
    throttled if the throttle level says so).
-5. For files: `materialize_files` writes to staging, returns local refs; adapter
-   supplies those. For text/image: adapter supplies bytes directly. Timeout →
+5. For files: the adapter serves each file's `FILECONTENTS` (per-file, and per-range in
+   M4) through the same render inversion — bytes stream origin→destination with **no
+   local staging**. For text/image: adapter supplies bytes directly. Timeout →
    graceful paste-fail.
 6. A second paste during step 3–5 spawns a *second independent job*; both complete.
 

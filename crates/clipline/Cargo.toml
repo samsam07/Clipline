@@ -1,0 +1,43 @@
+[package]
+name = "clipline"
+version = "0.1.0"
+edition = "2021"
+description = "Clipline — symmetric LAN clipboard mesh: CLI + tray shell that injects the per-OS clipboard adapter into clipline-core"
+license = "MIT"
+
+[[bin]]
+name = "clipline"
+path = "src/main.rs"
+
+[dependencies]
+clipline-core = { path = "../clipline-core" }
+# Async runtime for the engine (CONVENTIONS.md). The consumer owns the runtime; core
+# does not spin one up. `sync`/`time` back the adapter's channels + render deadline.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+# Structured logging (tracing-style, CONVENTIONS.md) — the binary installs the
+# subscriber; core only emits.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Windows clipboard adapter (injected into core; M1). `windows` = Win32 clipboard +
+# delayed render + OLE virtual files; `image` = PNG<->DIB codec (PNG-on-wire, SPEC §9).
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_Graphics_Gdi",
+] }
+# The `#[implement(IDataObject)]` macro expands to `windows_core::…` paths, so this must
+# be a direct dependency (version matched to `windows`).
+windows-core = "0.61"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }

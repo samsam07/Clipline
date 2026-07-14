@@ -128,13 +128,16 @@ Gate signal-source bindings (Apollo command hooks, scripts, manual): **Phase 2**
 - **Text** — UTF-8 on the wire; rebuild platform variants at paste.
 - **Images** — normalize to PNG on the wire; rebuild `CF_DIB` / `image/png` per-OS at
   paste.
-- **Files** — by-reference everywhere; bytes move only on a real paste. Read source
-  bytes on demand; materialize destination-local copies; advertise local refs. Per-OS
+- **Files** — by-reference everywhere; bytes move only on a real paste, and only the
+  bytes actually read. Read source bytes on demand and **stream** them through to the
+  pasting app — **no destination-side staging copy** (M1 decision; mstsc-style). Per-OS
   mechanism (M0 Finding C, see `PLATFORM-NOTES.md`): **Windows outbound uses
-  `CFSTR_FILEDESCRIPTORW` + `CFSTR_FILECONTENTS`** (virtual files — a `CF_HDROP`
-  promise is force-materialized at *copy* time by clipboard monitors); **Linux uses
-  `text/uri-list`** (analog behavior TBD in M0b). Staging-dir layout + cleanup
-  `[CRYSTALLIZE: file milestone]`.
+  `CFSTR_FILEDESCRIPTORW` + `CFSTR_FILECONTENTS`** via an `IDataObject` (virtual files —
+  a `CF_HDROP` promise is force-materialized at *copy* time by clipboard monitors),
+  serving `FILECONTENTS` per-file (and, in M4, per-range) through the lazy-render
+  bridge; **Linux uses `text/uri-list`** pointing at a **FUSE mount** that streams on
+  read (M-Linux). No staging dir on either OS. A file group is carried in the offer as
+  a manifest of `{ rel_path, size }` entries; contents are fetched by file index.
 - **Rich text (HTML)** — `text/html` ↔ `CF_HTML` codec (the byte-offset preamble).
   Owning milestone `[CRYSTALLIZE: html milestone]`.
 - **RTF** — **Phase 2**.

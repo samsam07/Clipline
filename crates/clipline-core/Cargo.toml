@@ -1,0 +1,26 @@
+[package]
+name = "clipline-core"
+version = "0.1.0"
+edition = "2021"
+description = "Clipline engine: head manager, transfer engine, mesh, policy, protocol types, and the ClipboardAdapter trait — consumer-agnostic, no platform clipboard crate"
+license = "MIT"
+
+[dependencies]
+# Async channels/futures for the deferred `on_render` inversion (M0 Finding D) and,
+# later, mesh I/O. Core uses only `sync` here — it owns no I/O of its own
+# (CONVENTIONS.md); the consumer supplies the runtime.
+tokio = { version = "1", features = ["sync"] }
+# Typed library errors (CONVENTIONS.md error handling — thiserror-style, not anyhow).
+thiserror = "2"
+# Structured logging; the sync<->async bridge must be traceable end-to-end
+# (CONVENTIONS.md logging). Metadata only — never clipboard contents.
+tracing = "0.1"
+
+[features]
+# The in-tree mock adapter (stands in for the not-yet-written Linux adapter, keeping
+# the trait honest for both OS models). Always available to in-crate tests; consumers
+# opt in via this feature. Pulls tokio's timer for the adapter-owned render timeout.
+mock = ["tokio/time"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "test-util"] }

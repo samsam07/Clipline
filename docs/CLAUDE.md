@@ -43,13 +43,17 @@ one is wrong, *stop and ask the human* — do not silently re-decide.
 7. **Transport: TLS-over-TCP, two connections per peer (control + bulk), one
    listening port.** Control plane is never throttled. Bulk transfers are serial
    (no parallelism until Phase 3) and throttleable.
-8. **Files are by-reference everywhere** — bytes move only on a real paste; the
-   destination materializes local copies and advertises *local* refs at paste.
+8. **Files are by-reference everywhere** — bytes move only on a real paste, and only
+   the bytes actually read. The destination **streams** file contents from the origin
+   on demand straight to the pasting app; Clipline **never stages a local copy**
+   (M1 decision — mstsc-style; there is no `materialize_files`).
    *Per-OS mechanism (refined by M0 Finding C — see `PLATFORM-NOTES.md`):* Windows
    outbound promises use the shell virtual-file model **`CFSTR_FILEDESCRIPTORW` +
-   `CFSTR_FILECONTENTS`**, **not `CF_HDROP`** — a `CF_HDROP` promise is force-
-   materialized at *copy* time by clipboard monitors, which breaks laziness. Linux
-   uses `text/uri-list` (analog force-read behavior TBD in M0b).
+   `CFSTR_FILECONTENTS`** via an `IDataObject`, **not `CF_HDROP`** — a `CF_HDROP`
+   promise is force-materialized at *copy* time by clipboard monitors, which breaks
+   laziness. `FILECONTENTS` is served per-file (and, in M4, per-range) through the same
+   lazy-render bridge — **no staging dir**. Linux uses `text/uri-list` pointing at a
+   **FUSE mount** that streams on read (no copy either; deferred to M-Linux).
 9. **Preserve the whole format set across the wire**; the destination picks. Never
    pre-flatten formats at the source.
 10. **Discovery v1 = explicit endpoints** (config by IP, Vox-style). mDNS/hybrid is
@@ -84,8 +88,8 @@ Atomic detail is deliberately deferred to the milestone that owns it, marked
 `[CRYSTALLIZE: <milestone>]` in the docs. When you reach that milestone, you (with the
 human) pin the detail *then* — not earlier. Examples currently deferred: exact wire
 field layouts, framing/encoding, error codes, the eager-size threshold value, throttle
-rates, per-OS render mechanics, staging-dir layout/cleanup. Do not fill these in
-speculatively ahead of their milestone.
+rates, per-OS render mechanics, the Linux FUSE mount lifecycle (M-Linux). Do not fill
+these in speculatively ahead of their milestone.
 
 ## Per-slice verification ritual
 

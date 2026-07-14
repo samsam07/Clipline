@@ -46,7 +46,7 @@ This file records only what's worth stating explicitly or what differs for Clipl
   `seq`, `origin_id`, `HeadQuery`/`HeadReply`, `FetchReq`, `Presence`, `Abort`,
   `HeadCapture`/`ContinuousCapture`, safety levels `Off`/`RespectHints`/`Strict`,
   throttle levels `Unlimited`/`Throttled`/`SignalDriven`, toggles `Presence`/`Send`/
-  `Receive`, `set_promise`/`set_eager`/`on_render`/`materialize_files`.
+  `Receive`, `set_promise`/`set_eager`/`on_render`.
 - Apply the **anti-drift grep rule** (CLAUDE.md) before introducing or reusing any name.
 
 ## Error handling

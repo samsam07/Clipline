@@ -60,11 +60,13 @@ be drivable with a mock/test adapter, no platform clipboard crate in its depende
 tree — and the mock stands in for the not-yet-written Linux adapter, keeping the trait
 honest for both.
 
-Implement `materialize_files` + staging on **Windows**: serve files lazily via
+Serve files lazily on **Windows** via an `IDataObject` advertising
 `CFSTR_FILEDESCRIPTORW` + `CFSTR_FILECONTENTS` (virtual files — **not** `CF_HDROP`,
 which clipboard monitors force-materialize at copy; see `PLATFORM-NOTES.md` Finding C).
-Settle locked decision #8's Windows mechanism here. Text + image format round-trip
-(PNG-on-wire).
+File contents **stream** through the render bridge (`FormatReq.file_idx`); **no staging
+dir** and **no `materialize_files`** (M1 decision — mstsc-style). A file group is carried
+in `Offer.files`. Settle locked decision #8's Windows mechanism here. Text + image format
+round-trip (PNG-on-wire).
 
 ## M2 — Mesh transport (control plane)
 
@@ -129,6 +131,7 @@ operation confirmed (no GUI required for daemon use).
 - Per-OS render mechanics specifics → M0/M1 (platform). Empirical spike findings
   live in `PLATFORM-NOTES.md` (incl. the `CF_HDROP` vs. `CFSTR_FILEDESCRIPTOR`
   question that touches locked decision #8).
-- Staging-dir layout + cleanup → M1 (file).
+- Staging-dir layout + cleanup → **dropped** (streaming, no staging — M1 decision).
+  Linux FUSE mount lifecycle → M-Linux.
 - `Strict` safety policy specifics → M6 (policy).
 - X11 crate choice → M1 (platform).
