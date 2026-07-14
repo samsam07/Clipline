@@ -117,7 +117,7 @@ async fn adapter_is_object_safe() {
             size: 10,
         }],
         files: vec![],
-        hash: ContentHash(vec![0xab, 0xcd]),
+        hash: ContentHash([0xab; 32]),
     };
     adapter.set_promise(&offer).expect("set_promise via dyn");
 

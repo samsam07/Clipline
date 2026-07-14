@@ -38,7 +38,7 @@ where
     while let Some(RenderRequest { req, reply }) = requests.recv().await {
         // Metadata only — never clipboard contents (CONVENTIONS.md logging).
         tracing::debug!(
-            origin_id = req.origin_id.0,
+            origin_id = %req.origin_id,
             seq = req.seq.0,
             format = req.format.as_str(),
             file_idx = req.file_idx,

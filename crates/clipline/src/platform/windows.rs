@@ -865,7 +865,7 @@ mod tests {
             seq: Seq(1),
             formats: vec![FormatDesc { mime, size }],
             files: vec![],
-            hash: ContentHash(vec![]),
+            hash: ContentHash([0; 32]),
         }
     }
 
@@ -926,7 +926,7 @@ mod tests {
                 rel_path: "note.txt".into(),
                 size: 10,
             }],
-            hash: ContentHash(vec![]),
+            hash: ContentHash([0; 32]),
         };
         adapter
             .set_promise(&offer)

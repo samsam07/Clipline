@@ -6,15 +6,58 @@ description = "Clipline engine: head manager, transfer engine, mesh, policy, pro
 license = "MIT"
 
 [dependencies]
-# Async channels/futures for the deferred `on_render` inversion (M0 Finding D) and,
-# later, mesh I/O. Core uses only `sync` here — it owns no I/O of its own
-# (CONVENTIONS.md); the consumer supplies the runtime.
-tokio = { version = "1", features = ["sync"] }
+# Async runtime primitives. The consumer supplies the runtime *flavor* (the binary's
+# `#[tokio::main]`); core owns **mesh I/O** (unlike the injected clipboard adapter) so it
+# needs net/io/time and `rt` to spawn its own mesh tasks (ARCHITECTURE.md; CONVENTIONS.md).
+tokio = { version = "1", features = [
+    "sync",
+    "rt",
+    "net",
+    "io-util",
+    "time",
+    "macros",
+] }
 # Typed library errors (CONVENTIONS.md error handling — thiserror-style, not anyhow).
 thiserror = "2"
 # Structured logging; the sync<->async bridge must be traceable end-to-end
 # (CONVENTIONS.md logging). Metadata only — never clipboard contents.
 tracing = "0.1"
+
+# --- M2 mesh protocol codec (control-plane wire format; the protocol `[CRYSTALLIZE]`) ---
+# serde + a compact Rust-native codec for control messages (CONVENTIONS.md; D1). Both
+# mesh ends are the same Clipline version pre-release, so no schema negotiation is needed.
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+# Length-prefixed framing (`tokio_util::codec`) over `bytes` buffers — the same codec
+# drops straight into a `Framed` over the TLS stream in the transport slice (M2.2).
+tokio-util = { version = "0.7", features = ["codec"] }
+bytes = "1"
+# `Stream`/`Sink` combinators for the framed control connection (`.split()`, `.next()`,
+# `.send()`). No executor — just the traits.
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+
+# --- M2 mesh transport (locked decision #7 TLS-over-TCP; #10 trusted-LAN no-auth) ---
+# rustls over the `ring` provider (D6) — chosen over the default aws-lc-rs to avoid a
+# NASM/C build dependency on Windows-first. Confidentiality only; the trust model is an
+# ephemeral self-signed cert + accept-any verifier (auth is Phase 2, locked #10).
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "std",
+    "tls12",
+    "logging",
+] }
+tokio-rustls = { version = "0.26", default-features = false, features = [
+    "ring",
+    "tls12",
+    "logging",
+] }
+# Ephemeral self-signed cert generation, also on `ring` (keeps the whole tree off aws-lc-rs).
+rcgen = { version = "0.13", default-features = false, features = ["ring"] }
+# BLAKE3 for the offer *manifest* hash (D5 — not content bytes; files aren't read at copy
+# time). `ContentHash` is a fixed 32-byte digest.
+blake3 = "1"
+# One random `u128` node identity at startup (D4 — `OriginId`, not persisted, no key auth).
+rand = "0.8"
 
 [features]
 # The in-tree mock adapter (stands in for the not-yet-written Linux adapter, keeping
@@ -23,4 +66,15 @@ tracing = "0.1"
 mock = ["tokio/time"]
 
 [dev-dependencies]
-tokio = { version = "1", features = ["sync", "rt", "macros", "time", "test-util"] }
+# `rt-multi-thread` + `net` back the loopback mesh integration test (two in-process nodes
+# over real TLS/TCP).
+tokio = { version = "1", features = [
+    "sync",
+    "rt",
+    "rt-multi-thread",
+    "net",
+    "io-util",
+    "macros",
+    "time",
+    "test-util",
+] }

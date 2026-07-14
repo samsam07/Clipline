@@ -16,7 +16,10 @@
 pub mod adapter;
 pub mod driver;
 pub mod error;
+pub mod head;
+pub mod mesh;
 pub mod protocol;
+pub mod wire;
 
 // Stands in for the not-yet-written Linux adapter; keeps the trait honest for both OS
 // models. Always available to in-crate tests; consumers opt in via the `mock` feature.
@@ -29,8 +32,10 @@ mod bridge_tests;
 // The names the rest of the workspace (and injected adapters) reuse verbatim.
 pub use adapter::{ClipboardAdapter, FormatReq, RenderRequest, RenderResult};
 pub use driver::{run_render_loop, RenderSource};
-pub use error::{AdapterError, RenderError};
+pub use error::{AdapterError, CodecError, MeshError, RenderError};
+pub use mesh::{Mesh, MeshConfig, MeshHandle, PeerInfo, DEFAULT_PORT};
 pub use protocol::{
     ContentHash, FileEntry, FormatDesc, LocalCopy, Mime, Offer, OriginId, Payload, SensitivityHint,
     Seq,
 };
+pub use wire::{ControlCodec, ControlMsg, ErrorCode, MAX_FRAME_LEN, PROTOCOL_VERSION};

@@ -145,5 +145,14 @@ Gate signal-source bindings (Apollo command hooks, scripts, manual): **Phase 2**
 ## 10. Discovery
 
 - **v1:** explicit endpoints — peers listed by IP in config (Vox-style). Trusted LAN,
-  no auth (pairing/identity/PSK is Phase 2).
+  no auth (pairing/identity/PSK is Phase 2). The configured peer list is a **dial-seed**
+  list only (who a node proactively connects to); on the trusted LAN a node also
+  **accepts inbound connections from peers not in its list** and adds them to the peer
+  table dynamically, so adding a machine only requires the newcomer to list existing
+  nodes — not editing every machine's config.
+  - **Security note (⚠️ Phase 2):** accept-any-inbound on a no-auth LAN means any host
+    that can reach the listening port joins the mesh (receives and originates offers).
+    This is sound only under the trusted-LAN assumption; **Phase 2 must gate admission**
+    via the pairing / identity-key / PSK mechanism below. The M2 accept path leaves a
+    commented seam where that admission check goes.
 - **Phase 2:** mDNS auto-discovery, or hybrid (mDNS discover + identity-key trust gate).

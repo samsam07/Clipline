@@ -1,6 +1,8 @@
 //! Typed library errors (CONVENTIONS.md — thiserror-style; the binary maps these to
 //! user-facing messages). No `unwrap`/`expect` in library code.
 
+use std::net::SocketAddr;
+
 use thiserror::Error;
 
 /// A render (the `on_render` inversion) could not be satisfied. A paste that hits one
@@ -31,4 +33,60 @@ pub enum AdapterError {
     /// (never clipboard contents — CONVENTIONS.md logging).
     #[error("platform clipboard error: {0}")]
     Os(String),
+}
+
+/// A control-plane frame could not be encoded or decoded — the length-prefixed
+/// `postcard` codec ([`crate::wire::ControlCodec`]). Framing/encoding/error-code detail
+/// is the M2 protocol `[CRYSTALLIZE]` pin. Implements `From<io::Error>` so it can be the
+/// error type of a `tokio_util::codec::Framed` over the transport stream (M2.2).
+#[derive(Debug, Error)]
+pub enum CodecError {
+    /// A frame's declared (or would-be) length exceeds the maximum control-frame size —
+    /// a DoS bound against a malformed/hostile length prefix (D1).
+    #[error("control frame of {0} bytes exceeds the maximum")]
+    FrameTooLarge(usize),
+    /// The frame body was not valid `postcard` for a `ControlMsg`.
+    #[error("malformed control frame: {0}")]
+    Malformed(postcard::Error),
+    /// Serializing a `ControlMsg` onto the wire failed.
+    #[error("failed to encode control frame: {0}")]
+    Encode(postcard::Error),
+    /// Underlying transport I/O error (required by `tokio_util::codec::Framed`).
+    #[error("transport io error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// A mesh transport failure (M2.2 — locked decision #7 TLS-over-TCP). Connection-level
+/// failures (a handshake that times out, a peer that closes) are expected and handled by
+/// ret/re-dial, not surfaced here; `MeshError` is for setup/bind failures the caller must
+/// see.
+#[derive(Debug, Error)]
+pub enum MeshError {
+    /// TLS setup failed (cert generation or rustls config — D6).
+    #[error("tls setup: {0}")]
+    Tls(String),
+    /// Could not bind the single listening port (locked decision #7).
+    #[error("failed to bind {addr}: {source}")]
+    Bind {
+        addr: SocketAddr,
+        source: std::io::Error,
+    },
+    /// A frame could not be encoded/decoded on a control connection.
+    #[error("control codec: {0}")]
+    Codec(#[from] CodecError),
+    /// A transport I/O error not tied to bind.
+    #[error("mesh io: {0}")]
+    Io(std::io::Error),
+    /// The peer did not complete the `Presence` handshake in time.
+    #[error("handshake timed out")]
+    HandshakeTimeout,
+    /// The peer closed the connection during the handshake.
+    #[error("peer closed during handshake")]
+    HandshakeClosed,
+    /// The peer advertised an incompatible protocol version (D3).
+    #[error("protocol version mismatch (peer {peer}, ours {ours})")]
+    VersionMismatch { peer: u16, ours: u16 },
+    /// The first frame was not the expected `Presence` (D9 — Presence is the handshake).
+    #[error("unexpected first message (expected Presence)")]
+    UnexpectedHandshake,
 }
