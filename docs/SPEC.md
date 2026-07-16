@@ -7,13 +7,17 @@ are deferred via `[CRYSTALLIZE: <milestone>]`.
 
 - **Offer** — broadcast on copy. Metadata only: `origin_id`, `seq`, available
   `formats` (each with MIME + size), content `hash`. No bytes (except eager small
-  payloads in Continuous mode, which ride with the offer). Field layout
-  `[CRYSTALLIZE: protocol milestone]`.
+  payloads in Continuous mode, which ride with the offer). Field layout **pinned** in M2
+  (`protocol.rs`): `OriginId` = random `u128`, `Seq` = `u64` Lamport, `ContentHash` =
+  BLAKE3 over this *manifest*, not the content bytes (hashing content would defeat
+  laziness — locked decision #8).
 - **Promise** — what a receiving node sets as its local clipboard head: a delayed-render
   placeholder advertising the offer's formats. Holds no bytes.
 - **Fetch** — issued when a local paste asks for a specific format. Keyed
-  `{ origin_id, seq, format }`. Pulls only that format's bytes, point-to-point from
-  the origin, over the bulk plane.
+  `{ origin_id, seq, format, file_idx? }` (+ `range` and `job_id` — see
+  `ARCHITECTURE.md` "Wire shape"; pinned M3.1). Pulls only that format's bytes — and with
+  `range`, only the bytes actually read — point-to-point from the origin, over the bulk
+  plane.
 
 **Ordering:** the newest offer wins, defined as highest `seq`; ties broken by
 `origin_id`. Every node acts only on its **own local head** and its **own in-flight

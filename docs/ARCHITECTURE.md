@@ -120,18 +120,39 @@ crate for Win32 clipboard + delayed render. X11 via a raw selection-owner impl.
 
 Two connections per peer, **one listening port** (many accepted sockets behind one
 listen socket — connections are cheap, listening ports are the scarce/firewalled
-resource).
+resource). A dialer declares which plane it wants with a one-byte `ConnRole` written
+immediately after the TLS handshake, before any framing (M3.1 — chosen over TLS ALPN so
+the split stays visible on the wire and in logs).
 
 - **Control plane** (small, always live, **never throttled**):
   `Offer`, `HeadQuery` / `HeadReply` (late-join), `Presence` / heartbeat, `Abort`.
   Eager small payloads ride here *with* the offer.
-- **Bulk plane** (serial, throttleable): `FetchReq { origin_id, seq, format, file_idx? }`
-  → byte stream.
+- **Bulk plane** (serial, throttleable): `FetchReq` → byte stream. **Directional** (M3.1):
+  dialed by the fetcher, to the origin; requests only travel fetcher → origin on it, so no
+  request ids or multiplexing are needed. A pair that fetches both ways holds three sockets
+  (one control, two bulk).
 
 Message *kinds* are locked above. Field layout, framing, encoding, and error codes are
-`[CRYSTALLIZE: protocol milestone]` (leaning: length-prefixed frames; a compact serde
-codec for control messages; raw byte stream for bulk). Fetches are keyed
-`{ origin_id, seq, format }`.
+**pinned** — the control plane in M2, the bulk plane in M3.1 (both in `wire.rs`):
+
+- **Control:** length-prefixed `postcard` frames (`ControlCodec`), a 1 MiB frame cap
+  (`MAX_FRAME_LEN`), `PROTOCOL_VERSION`, `ErrorCode`.
+- **Bulk:** `[kind:u8][len:u32 big-endian][body]` (`BulkCodec`). A `Hello`, then a `Fetch`
+  per job; the response is `Data` chunks (`BULK_CHUNK` = 64 KiB, raw bytes — not
+  re-encoded through `postcard`) terminated by `End`, or an `Error(ErrorCode)`. Framed
+  rather than raw so the response has an explicit EOF and a mid-stream error path, and so
+  one connection is reusable across fetches.
+
+Fetches are keyed `{ origin_id, seq, format, file_idx? }` — the same key as the adapter's
+`FormatReq` — plus `range` (locked decision #8's "only the bytes actually read") and
+`job_id`. The job id exists because a job is **not** one request: a destination `IStream`
+may seek, and the origin's pin must span every request the job makes, or a copy landing
+between two reads would break pin-survives-new-copy (decision #6; §6 row 2).
+
+`Presence` carries the sender's `listen_port` (M3.1): a fetcher must dial the origin's
+*listening* port, but a connection the peer dialed only reveals their ephemeral source
+port. Without it a node could never fetch from a peer it did not itself dial — an ordinary
+topology, since §10 accepts unlisted inbound.
 
 ## State
 

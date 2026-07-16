@@ -78,7 +78,19 @@ dir** and **no `materialize_files`** (M1 decision — mstsc-style). A file group
 in `Offer.files`. Settle locked decision #8's Windows mechanism here. Text + image format
 round-trip (PNG-on-wire).
 
-## M2 — Mesh control plane + offer/promise end-to-end  (was M2 + M3)
+## M2 — Mesh control plane + offer/promise end-to-end  (was M2 + M3)  ✅ DONE
+
+**Outcome: DONE.** TLS-over-TCP (rustls on ring; ephemeral self-signed cert + accept-any
+verifier — confidentiality only, auth is Phase 2), one listening port, per-peer control
+connection, `Presence` handshake with version check, peer table + connection dedup, 2 s
+heartbeat / 6 s liveness drop. The protocol `[CRYSTALLIZE]` is **pinned** (`wire.rs`):
+length-prefixed `postcard` frames (`ControlCodec`), 1 MiB cap, `ErrorCode`; `OriginId` =
+random `u128`, `Seq` = `u64` Lamport, `ContentHash` = BLAKE3 over the offer *manifest*
+(not content — keeps files lazy). Head Manager (single owning task, decision #4) with
+Lamport ordering, echo suppression, offer/promise through the injected adapter, and
+connect-time `HeadQuery`/`HeadReply` late-join. `HeadCapture` only (eager/Continuous is
+M5). 15 core tests green — **needs `--features mock`** (or `--all-features`); a plain
+`cargo test` silently skips the three offer/promise gate tests.
 
 Merged: the control plane can't be demonstrated with "no bytes," and its
 `HeadQuery`/`HeadReply` need the very message codec the offer path pins — so they are
@@ -87,7 +99,8 @@ one milestone.
 - **Transport:** TLS-over-TCP, explicit endpoints, one listening port, per-peer
   **control** connection; `Presence`/heartbeat; peer table.
 - **Message codec:** length-prefixed frames + a compact serde codec for control
-  messages. Wire field layout / framing / encoding / error codes `[CRYSTALLIZE]` here.
+  messages. Wire field layout / framing / encoding / error codes `[CRYSTALLIZE]` here —
+  **pinned**; see `wire.rs` / `protocol.rs`.
 - **Offer/promise:** copy → broadcast `Offer` → peers set their head (`set_promise`, or
   `set_eager` for small payloads riding the control plane). Echo suppression
   (`origin_id`), ordering (highest `seq`, `origin_id` tiebreak). Connect-time
@@ -138,13 +151,26 @@ operation confirmed (no GUI required for daemon use).
   bypasses the shared clipboard).
 - Headless CLI clipboard primitives (`clip copy` / `clip paste` over the mesh).
 - Clipboard-history UI / ring buffer beyond what the OS historian provides.
+- **Deeper transfer pipelining:** M3 shipped `TCP_NODELAY`, a bigger wire chunk, and
+  **window read-ahead** (fetch a 4 MiB window per round trip + prefetch the next while the
+  app consumes the current), lifting paste throughput from ~2.7 MB/s off the round-trip
+  floor. The remaining lever is *multiple windows in flight at once* (true request
+  pipelining on the bulk connection), for links where a single window still leaves the pipe
+  idle. Only if a real need appears.
+- **Alternate bulk transport for large files `[CRYSTALLIZE]`:** a config that switches the
+  large-file path onto a faster technology (an FTP/SFTP-class bulk mover, or similar) for
+  maximum throughput, while the clipboard model still drives *what* moves and *when*. Needs
+  a spec — the offer/pin/abort semantics and the by-reference contract (decision #8) must
+  still hold; only the byte pipe changes. Idea captured; design deferred.
 
 ## Phase 3
 - Parallel transfers (multiple bulk jobs concurrently) — only if a real need appears;
   it fights the bandwidth-politeness goal, so it stays opt-in and last.
 
 ## Deferred detail (`[CRYSTALLIZE]`, by owning milestone)
-- Wire field layouts / framing / encoding / error codes → M2 (protocol).
+- Wire field layouts / framing / encoding / error codes → **done**: control plane in M2,
+  bulk plane in M3.1 (both `wire.rs` — `ControlCodec` / `BulkCodec`, `MAX_FRAME_LEN` /
+  `MAX_BULK_FRAME_LEN`, `BULK_CHUNK`, `ConnRole`, `PROTOCOL_VERSION`, `ErrorCode`).
 - Eager-size threshold value → M5.
 - Throttle rate(s) → M5.
 - Per-OS render mechanics specifics → M0/M1 (platform) — **done** for Windows. Empirical

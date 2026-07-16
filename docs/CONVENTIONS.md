@@ -18,7 +18,10 @@ This file records only what's worth stating explicitly or what differs for Clipl
   (MIME-typed, fd-serve = lazy-capable). **Not `arboard`** (text+image only).
 - `windows` — Win32 clipboard + delayed render (`WM_RENDERFORMAT`).
 - X11 selection-owner: raw impl (crate choice `[CRYSTALLIZE: platform milestone]`).
-- serde + a compact codec for control messages (`[CRYSTALLIZE: protocol milestone]`).
+- serde + `postcard` for control messages — **pinned** in M2 (`wire.rs`: length-prefixed
+  frames + `postcard`). Bulk-plane framing is not covered by that pin.
+- `blake3` (`ContentHash`), `rand` (`OriginId`), `rcgen`/`tokio-rustls` (ephemeral TLS
+  cert) — all on `ring`, matching `rustls`. Pinned in M2.
 
 ## Module / workspace layout
 - Workspace split, mirroring Vox: **`clipline-core`** (reusable crate) and **`clipline`**
