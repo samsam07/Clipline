@@ -20,6 +20,10 @@ use crate::wire::ControlMsg;
 pub struct PeerInfo {
     pub origin_id: OriginId,
     pub addr: SocketAddr,
+    /// Where to *dial* this peer: their IP + the `listen_port` they advertised in
+    /// `Presence` (M3.1). Differs from `addr` whenever they dialed us — then `addr` holds
+    /// their ephemeral source port, which nothing can connect back to.
+    pub listen_addr: SocketAddr,
     pub connected_at: Instant,
     /// `true` if we dialed this peer, `false` if it dialed us (the kept, canonical one).
     pub initiated_by_us: bool,
@@ -29,6 +33,7 @@ struct PeerEntry {
     conn_id: u64,
     is_canonical: bool,
     addr: SocketAddr,
+    listen_addr: SocketAddr,
     initiated_by_us: bool,
     connected_at: Instant,
     /// Outbound queue to this peer, drained by the connection's writer task. Used by
@@ -70,11 +75,14 @@ impl PeerTable {
         peer_id: OriginId,
         initiated_by_us: bool,
         addr: SocketAddr,
+        listen_port: u16,
         out_tx: mpsc::Sender<ControlMsg>,
         supersede: Arc<Notify>,
     ) -> Registration {
         // Our-initiated connection is canonical iff our id is the lower one.
         let is_canonical = initiated_by_us == (self.my_id < peer_id);
+        // Dialable address: their IP, their advertised listening port (M3.1 bulk routing).
+        let listen_addr = SocketAddr::new(addr.ip(), listen_port);
         let mut map = self.map.lock().expect("peer table lock");
         match map.get(&peer_id) {
             // Keep the existing one: it is already canonical, or this newcomer is no better.
@@ -89,6 +97,7 @@ impl PeerTable {
                         conn_id,
                         is_canonical,
                         addr,
+                        listen_addr,
                         initiated_by_us,
                         connected_at: Instant::now(),
                         out_tx,
@@ -105,6 +114,7 @@ impl PeerTable {
                         conn_id,
                         is_canonical,
                         addr,
+                        listen_addr,
                         initiated_by_us,
                         connected_at: Instant::now(),
                         out_tx,
@@ -114,6 +124,14 @@ impl PeerTable {
                 Registration::Accepted(conn_id)
             }
         }
+    }
+
+    /// Where to dial `peer_id` for a bulk fetch (M3.1). `None` = not a connected peer,
+    /// which is [`crate::error::FetchError::OriginNotConnected`] — locked decision #1
+    /// means there is no relay to fall back on.
+    pub(crate) fn listen_addr(&self, peer_id: OriginId) -> Option<SocketAddr> {
+        let map = self.map.lock().expect("peer table lock");
+        map.get(&peer_id).map(|e| e.listen_addr)
     }
 
     /// Remove a connection iff the table still holds *this* one (guards against a stale
@@ -131,6 +149,7 @@ impl PeerTable {
             .map(|(id, e)| PeerInfo {
                 origin_id: *id,
                 addr: e.addr,
+                listen_addr: e.listen_addr,
                 connected_at: e.connected_at,
                 initiated_by_us: e.initiated_by_us,
             })

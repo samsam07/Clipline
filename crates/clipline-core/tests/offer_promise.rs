@@ -13,8 +13,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use clipline_core::mock::MockAdapter;
-use clipline_core::protocol::{FormatDesc, LocalCopy, Mime, Offer, SensitivityHint};
+use clipline_core::mock::{MockAdapter, MockCapture};
+use clipline_core::protocol::{Mime, Offer};
 use clipline_core::{head, ClipboardAdapter, Mesh, OriginId};
 
 /// A wired node: adapter (mock) + mesh + spawned Head Manager, with a head observer.
@@ -33,16 +33,19 @@ impl Node {
         // The head watch is the shared seam: the Head Manager writes it; the mesh reads it
         // to answer late-join HeadQuerys.
         let (head_tx, head_rx) = tokio::sync::watch::channel(None);
-        let mesh = Mesh::bind(0, id, Some(head_rx.clone()))
+        let mesh = Mesh::bind(0, id, Some(head_rx.clone()), None)
             .await
             .expect("bind");
         let offers = mesh.take_offers().expect("offers receiver");
+        // No pin store here: this suite is about offer/promise ordering, not origin
+        // serving (that is `origin_serve.rs`).
         let task = head::spawn(
             id,
             adapter.clone() as Arc<dyn ClipboardAdapter>,
             mesh.handle(),
             offers,
             head_tx,
+            None,
         );
         Node {
             id,
@@ -57,15 +60,13 @@ impl Node {
         SocketAddr::from(([127, 0, 0, 1], self.mesh.local_addr().port()))
     }
 
-    /// Simulate a local text copy (a `LocalCopy` from the adapter's `watch`).
+    /// Simulate a local text copy of `len` bytes (a `LocalCopy` from the adapter's `watch`).
     fn copy_text(&self, len: u64) {
-        self.adapter.push_local_copy(LocalCopy {
-            formats: vec![FormatDesc {
-                mime: Mime::text_utf8(),
-                size: len,
-            }],
-            sensitivity_hint: SensitivityHint::None,
-        });
+        let mut capture = MockCapture::default();
+        capture
+            .formats
+            .insert(Mime::text_utf8(), vec![b'x'; len as usize]);
+        self.adapter.push_capture(capture, Vec::new());
     }
 }
 
@@ -191,4 +192,43 @@ async fn late_joiner_syncs_head() {
     let promise = b.adapter.promises().pop().expect("a promise");
     assert_eq!(promise.origin_id, a.id, "late-join head points at a");
     assert_eq!(promise.seq.0, 1, "it is a's original offer");
+}
+
+/// A source app writing the clipboard twice for one copy (observed on real hardware,
+/// esp. images) must not produce two offers: an identical re-copy of what we already offered
+/// is suppressed, its redundant capture released, and the seq does not advance. A genuinely
+/// different copy still does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duplicate_local_copy_is_suppressed() {
+    let a = Node::spawn().await;
+
+    a.copy_text(5);
+    assert!(
+        eventually(|| a.head.borrow().is_some(), Duration::from_secs(5)).await,
+        "first copy sets the head",
+    );
+    let seq1 = a.head.borrow().as_ref().expect("head").seq;
+
+    // The same content again — a duplicate.
+    a.copy_text(5);
+    assert!(
+        eventually(|| !a.adapter.released().is_empty(), Duration::from_secs(5)).await,
+        "the duplicate's capture should be released",
+    );
+    assert_eq!(
+        a.head.borrow().as_ref().expect("head").seq,
+        seq1,
+        "a duplicate copy must not advance the head",
+    );
+
+    // Different content still advances.
+    a.copy_text(7);
+    assert!(
+        eventually(
+            || a.head.borrow().as_ref().is_some_and(|o| o.seq > seq1),
+            Duration::from_secs(5),
+        )
+        .await,
+        "a distinct copy still advances the head",
+    );
 }

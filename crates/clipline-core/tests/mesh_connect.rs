@@ -32,8 +32,8 @@ async fn two_nodes_connect_and_see_each_other() {
     let a_id = OriginId::new_random();
     let b_id = OriginId::new_random();
 
-    let a = Mesh::bind(0, a_id, None).await.expect("bind a");
-    let b = Mesh::bind(0, b_id, None).await.expect("bind b");
+    let a = Mesh::bind(0, a_id, None, None).await.expect("bind a");
+    let b = Mesh::bind(0, b_id, None, None).await.expect("bind b");
     let (a_addr, b_addr) = (a.local_addr(), b.local_addr());
 
     // Both list each other → both dial + both accept (the 2-PC case).
@@ -75,8 +75,8 @@ async fn peer_drop_is_detected() {
     let a_id = OriginId::new_random();
     let b_id = OriginId::new_random();
 
-    let a = Mesh::bind(0, a_id, None).await.expect("bind a");
-    let b = Mesh::bind(0, b_id, None).await.expect("bind b");
+    let a = Mesh::bind(0, a_id, None, None).await.expect("bind a");
+    let b = Mesh::bind(0, b_id, None, None).await.expect("bind b");
     let (a_addr, b_addr) = (a.local_addr(), b.local_addr());
 
     a.connect(vec![loopback(b_addr)]);
@@ -109,8 +109,8 @@ async fn one_sided_dial_still_connects() {
     let a_id = OriginId::new_random();
     let b_id = OriginId::new_random();
 
-    let a = Mesh::bind(0, a_id, None).await.expect("bind a");
-    let b = Mesh::bind(0, b_id, None).await.expect("bind b");
+    let a = Mesh::bind(0, a_id, None, None).await.expect("bind a");
+    let b = Mesh::bind(0, b_id, None, None).await.expect("bind b");
     let a_addr = a.local_addr();
 
     // Only b dials a; a does not dial b.

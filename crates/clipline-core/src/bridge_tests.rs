@@ -9,10 +9,9 @@ use std::time::Duration;
 use crate::adapter::{ClipboardAdapter, FormatReq, RenderResult};
 use crate::driver::{run_render_loop, RenderSource};
 use crate::error::RenderError;
-use crate::mock::{MockAdapter, RenderOutcome};
-use crate::protocol::{
-    ContentHash, FormatDesc, LocalCopy, Mime, Offer, OriginId, Payload, SensitivityHint, Seq,
-};
+use crate::mock::{MockAdapter, MockCapture, RenderOutcome};
+use crate::protocol::{ContentHash, FormatDesc, Mime, Offer, OriginId, Payload, Seq};
+use crate::wire::JobId;
 
 /// A [`RenderSource`] that produces bytes after a delay — stands in for the M3 network
 /// fetch (fast fetch vs. one that overruns the adapter deadline).
@@ -43,6 +42,8 @@ fn sample_req() -> FormatReq {
         seq: Seq(3),
         format: Mime::text_utf8(),
         file_idx: None,
+        range: None,
+        job: JobId::next(),
     }
 }
 
@@ -126,22 +127,20 @@ async fn adapter_is_object_safe() {
     let _copies = adapter.watch();
 }
 
-/// `watch` carries locally-detected copies (shape locked in M1; core-side consumption
-/// is M2).
+/// `watch` carries locally-detected copies (shape locked in M1), now including the M3.2
+/// capture handle the origin serves fetches from.
 #[tokio::test]
 async fn watch_delivers_local_copies() {
     let adapter = MockAdapter::new();
     let mut watch = adapter.watch();
 
-    adapter.push_local_copy(LocalCopy {
-        formats: vec![FormatDesc {
-            mime: Mime::png(),
-            size: 4096,
-        }],
-        sensitivity_hint: SensitivityHint::None,
-    });
+    let mut capture = MockCapture::default();
+    capture.formats.insert(Mime::png(), vec![0u8; 4096]);
+    let id = adapter.push_capture(capture, Vec::new());
 
     let copy = watch.recv().await.expect("local copy");
     assert_eq!(copy.formats.len(), 1);
     assert_eq!(copy.formats[0].mime, Mime::png());
+    assert_eq!(copy.formats[0].size, 4096, "size comes from the capture");
+    assert_eq!(copy.capture, id, "the copy names the capture serving it");
 }

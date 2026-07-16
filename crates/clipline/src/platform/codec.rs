@@ -14,6 +14,34 @@ use image::{ImageError, RgbaImage};
 /// *read* larger headers (V4/V5) by honoring their declared size.
 const BITMAPINFOHEADER_SIZE: u32 = 40;
 const BI_RGB: u32 = 0;
+/// Channel positions are given by explicit masks rather than implied by `bit_count`.
+///
+/// Not exotic: this is what a **screenshot** looks like. Win+Shift+S carries alpha, so it
+/// produces a `BI_BITFIELDS` DIB (usually with a `BITMAPV5HEADER`), where Paint produces
+/// plain `BI_RGB`. Rejecting it meant screenshots silently never synced — found by the M3
+/// manual gate.
+const BI_BITFIELDS: u32 = 3;
+/// `BITMAPV4HEADER` — masks live in the header, not after it.
+const BITMAPV4HEADER_SIZE: u32 = 108;
+
+/// Pull one channel out of a packed pixel word and scale it to 8 bits.
+///
+/// A mask is a contiguous run of bits (`0x00FF0000` for red in BGRA, say). Shift it down,
+/// then scale from the mask's own width to 0–255 — a 5-bit channel in a 16-bit format must
+/// become 8-bit, not stay dark.
+fn extract_channel(word: u32, mask: u32) -> u8 {
+    if mask == 0 {
+        return 0;
+    }
+    let shift = mask.trailing_zeros();
+    let value = (word & mask) >> shift;
+    let max = mask >> shift;
+    if max == 0 {
+        return 0;
+    }
+    // Round rather than truncate: 255/255 must stay 255.
+    ((value as u64 * 255 + (max as u64 / 2)) / max as u64) as u8
+}
 
 /// UTF-8 text -> a NUL-terminated UTF-16LE code-unit buffer for `CF_UNICODETEXT`.
 pub fn text_to_utf16(s: &str) -> Vec<u16> {
@@ -88,12 +116,12 @@ pub fn png_to_dib(png: &[u8]) -> Result<Vec<u8>, CodecError> {
     Ok(out)
 }
 
-/// A packed `CF_DIB` -> PNG bytes (wire). Decodes 24/32bpp uncompressed (`BI_RGB`)
-/// DIBs in either row direction — enough for what we emit and for common producers.
-/// Palette-indexed and `BI_BITFIELDS`/compressed DIBs are out of scope for M1.
+/// A packed `CF_DIB` -> PNG bytes (wire). Decodes 24/32bpp DIBs in either row direction,
+/// both `BI_RGB` (Paint and friends) and `BI_BITFIELDS` with a v3/V4/V5 header (screenshots
+/// — see [`BI_BITFIELDS`]).
 ///
-/// Inbound half (OS format -> wire): production callers are the Send/copy path (M2);
-/// for M1 it is exercised by the round-trip tests.
+/// Still out of scope: palette-indexed DIBs, and genuinely compressed ones (RLE), which
+/// would need a real decoder rather than a layout change.
 #[allow(dead_code)]
 pub fn dib_to_png(dib: &[u8]) -> Result<Vec<u8>, CodecError> {
     if dib.len() < BITMAPINFOHEADER_SIZE as usize {
@@ -109,8 +137,8 @@ pub fn dib_to_png(dib: &[u8]) -> Result<Vec<u8>, CodecError> {
     let bit_count = rd_u16(14);
     let compression = rd_u32(16);
 
-    if compression != BI_RGB {
-        return Err(CodecError::Dib("only BI_RGB is decoded"));
+    if compression != BI_RGB && compression != BI_BITFIELDS {
+        return Err(CodecError::Dib("only BI_RGB / BI_BITFIELDS are decoded"));
     }
     if bit_count != 24 && bit_count != 32 {
         return Err(CodecError::Dib("only 24/32 bpp is decoded"));
@@ -122,9 +150,39 @@ pub fn dib_to_png(dib: &[u8]) -> Result<Vec<u8>, CodecError> {
     let w = width as u32;
     let h = height_raw.unsigned_abs();
 
+    // Where the channels are, and where the pixels start. `BI_BITFIELDS` states the layout
+    // explicitly, and *where* it states it depends on the header: a plain
+    // `BITMAPINFOHEADER` is followed by three mask DWORDs (which also push the pixels
+    // back); V4/V5 carry the masks inside the header instead.
+    let (masks, pixels_off) = if compression == BI_BITFIELDS {
+        if header_size >= BITMAPV4HEADER_SIZE {
+            // V4/V5: masks live inside the header — R, G, B at 40/44/48 and, unlike the v3
+            // form, an alpha mask at 52. That alpha is the whole reason a screenshot uses
+            // this layout.
+            if dib.len() < 56 {
+                return Err(CodecError::Dib("V4/V5 header truncated"));
+            }
+            (
+                Some([rd_u32(40), rd_u32(44), rd_u32(48), rd_u32(52)]),
+                header_size as usize,
+            )
+        } else {
+            // v3 + trailing masks: R, G, B only — no alpha mask exists in this form.
+            let off = header_size as usize;
+            if dib.len() < off + 12 {
+                return Err(CodecError::Dib("bitfield masks truncated"));
+            }
+            (
+                Some([rd_u32(off), rd_u32(off + 4), rd_u32(off + 8), 0]),
+                off + 12,
+            )
+        }
+    } else {
+        (None, header_size as usize) // no palette for 24/32bpp BI_RGB
+    };
+
     let bytes_pp = (bit_count / 8) as usize;
     let row_stride = (w as usize * bit_count as usize).div_ceil(32) * 4; // 4-byte aligned rows
-    let pixels_off = header_size as usize; // no palette for 24/32bpp BI_RGB
     let needed = pixels_off
         .checked_add(row_stride * h as usize)
         .ok_or(CodecError::Dib("size overflow"))?;
@@ -139,11 +197,35 @@ pub fn dib_to_png(dib: &[u8]) -> Result<Vec<u8>, CodecError> {
         let row_start = pixels_off + src_row as usize * row_stride;
         for x in 0..w {
             let px = row_start + x as usize * bytes_pp;
-            let b = dib[px];
-            let g = dib[px + 1];
-            let r = dib[px + 2];
-            let a = if bytes_pp == 4 { dib[px + 3] } else { 255 };
-            img.put_pixel(x, y, image::Rgba([r, g, b, a]));
+            let rgba = match masks {
+                // Implied BGR(A) order.
+                None => {
+                    let a = if bytes_pp == 4 { dib[px + 3] } else { 255 };
+                    [dib[px + 2], dib[px + 1], dib[px], a]
+                }
+                // Masked: pull each channel out of the little-endian pixel word.
+                Some([mr, mg, mb, ma]) => {
+                    let word = match bytes_pp {
+                        4 => u32::from_le_bytes([dib[px], dib[px + 1], dib[px + 2], dib[px + 3]]),
+                        _ => u32::from_le_bytes([dib[px], dib[px + 1], dib[px + 2], 0]),
+                    };
+                    // No alpha mask means opaque — an unmasked channel is not a
+                    // transparent one, and a screenshot read as fully transparent would
+                    // look like a bug to the user.
+                    let a = if ma == 0 {
+                        255
+                    } else {
+                        extract_channel(word, ma)
+                    };
+                    [
+                        extract_channel(word, mr),
+                        extract_channel(word, mg),
+                        extract_channel(word, mb),
+                        a,
+                    ]
+                }
+            };
+            img.put_pixel(x, y, image::Rgba(rgba));
         }
     }
 
@@ -197,7 +279,75 @@ mod tests {
             png
         })
         .unwrap();
-        dib[16] = 1; // biCompression = BI_RLE8
+        dib[16] = 1; // biCompression = BI_RLE8 — genuinely undecodable, unlike BI_BITFIELDS
         assert!(matches!(dib_to_png(&dib), Err(CodecError::Dib(_))));
+    }
+
+    /// Build a `BITMAPV5HEADER` + `BI_BITFIELDS` BGRA DIB — the shape **Win+Shift+S**
+    /// produces, which we used to reject outright (found by the M3 manual gate: Paint
+    /// pasted, screenshots silently did not).
+    fn v5_bgra_dib(pixels: &[[u8; 4]], w: i32, h: i32) -> Vec<u8> {
+        let mut dib = vec![0u8; 124];
+        dib[0..4].copy_from_slice(&124u32.to_le_bytes()); // bV5Size
+        dib[4..8].copy_from_slice(&w.to_le_bytes());
+        dib[8..12].copy_from_slice(&h.to_le_bytes());
+        dib[12..14].copy_from_slice(&1u16.to_le_bytes()); // planes
+        dib[14..16].copy_from_slice(&32u16.to_le_bytes()); // bit count
+        dib[16..20].copy_from_slice(&3u32.to_le_bytes()); // BI_BITFIELDS
+        dib[40..44].copy_from_slice(&0x00FF_0000u32.to_le_bytes()); // red
+        dib[44..48].copy_from_slice(&0x0000_FF00u32.to_le_bytes()); // green
+        dib[48..52].copy_from_slice(&0x0000_00FFu32.to_le_bytes()); // blue
+        dib[52..56].copy_from_slice(&0xFF00_0000u32.to_le_bytes()); // alpha
+                                                                    // Bottom-up rows, BGRA byte order.
+        for row in (0..h as usize).rev() {
+            for x in 0..w as usize {
+                let [r, g, b, a] = pixels[row * w as usize + x];
+                dib.extend_from_slice(&[b, g, r, a]);
+            }
+        }
+        dib
+    }
+
+    #[test]
+    fn dib_decodes_bitfields_v5_like_a_screenshot() {
+        let pixels = [
+            [255, 0, 0, 255],
+            [0, 255, 0, 128],
+            [10, 20, 30, 40],
+            [1, 2, 3, 255],
+        ];
+        let dib = v5_bgra_dib(&pixels, 2, 2);
+
+        let png = dib_to_png(&dib).expect("BI_BITFIELDS V5 must decode");
+        let img = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_eq!(img.dimensions(), (2, 2));
+        for (i, expect) in pixels.iter().enumerate() {
+            let (x, y) = ((i % 2) as u32, (i / 2) as u32);
+            assert_eq!(img.get_pixel(x, y).0, *expect, "pixel {x},{y}");
+        }
+    }
+
+    /// No alpha mask means opaque. A screenshot decoded as fully transparent would look
+    /// like a bug to the user, so the absent mask must not read as `a = 0`.
+    #[test]
+    fn dib_bitfields_without_an_alpha_mask_is_opaque() {
+        let mut dib = v5_bgra_dib(&[[7, 8, 9, 0]], 1, 1);
+        dib[52..56].copy_from_slice(&0u32.to_le_bytes()); // no alpha mask
+
+        let png = dib_to_png(&dib).expect("decode");
+        let img = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_eq!(img.get_pixel(0, 0).0, [7, 8, 9, 255]);
+    }
+
+    /// Channels narrower than 8 bits scale up rather than staying dark, and a full mask
+    /// round-trips to 255 rather than 254.
+    #[test]
+    fn channel_extraction_scales_to_eight_bits() {
+        assert_eq!(extract_channel(0x00FF_0000, 0x00FF_0000), 255);
+        assert_eq!(extract_channel(0x0000_0000, 0x00FF_0000), 0);
+        // 5-bit channel, all ones -> full white, not 31.
+        assert_eq!(extract_channel(0b11111, 0b11111), 255);
+        // 5-bit channel, half -> about half.
+        assert_eq!(extract_channel(0b10000, 0b11111), 132);
     }
 }

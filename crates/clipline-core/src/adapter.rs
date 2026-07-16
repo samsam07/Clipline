@@ -26,13 +26,13 @@
 
 use tokio::sync::{mpsc, oneshot};
 
-use crate::error::{AdapterError, RenderError};
-use crate::protocol::{LocalCopy, Mime, Offer, OriginId, Payload, Seq};
+use crate::error::{AdapterError, LocalReadError, RenderError};
+use crate::protocol::{CaptureId, LocalCopy, Mime, Offer, OriginId, Payload, Seq};
+use crate::wire::{ByteRange, JobId};
 
-/// What the OS asks for when it forces a render of the current head: one format of a
-/// specific `{origin_id, seq}`. Keyed identically to the bulk-plane `FetchReq`
-/// (ARCHITECTURE.md — fetches are keyed `{origin_id, seq, format}`, with an optional
-/// per-file index).
+/// What the OS asks for when it forces a render of the current head: one slice of one
+/// format of a specific `{origin_id, seq}`. Keyed identically to the bulk-plane
+/// [`crate::wire::FetchReq`], which core builds from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormatReq {
     pub origin_id: OriginId,
@@ -41,6 +41,20 @@ pub struct FormatReq {
     /// For per-file `CFSTR_FILECONTENTS` renders (Windows `FORMATETC.lindex`): which
     /// file within the offer's file group is being read. `None` for non-file formats.
     pub file_idx: Option<u32>,
+    /// Which slice the OS is reading; `None` means the whole format (M3).
+    ///
+    /// Whole-format is right for text and images — they are one blob and the OS wants all
+    /// of it. For files it is the adapter's ranged reads that make locked decision #8's
+    /// "only the bytes actually read" true, and that bound how long one OS call blocks
+    /// (M0 Finding A budgets a *call*, not a transfer).
+    pub range: Option<ByteRange>,
+    /// Which **transfer job** this read belongs to (SPEC.md §4; locked decision #5).
+    ///
+    /// The adapter allocates it, because only the adapter knows where a job begins and
+    /// ends: one `IStream` handed to a pasting app is one job, however many reads it makes
+    /// of it. Core cannot infer that from the reads themselves — and it must not, or the
+    /// origin's pin would be released between two reads of the same file (M3 ruling Q12).
+    pub job: JobId,
 }
 
 /// The result core supplies for a [`RenderRequest`]: the produced bytes, or a
@@ -58,6 +72,28 @@ pub type RenderResult = Result<Payload, RenderError>;
 pub struct RenderRequest {
     pub req: FormatReq,
     pub reply: oneshot::Sender<RenderResult>,
+}
+
+/// One read of a **local** capture — the origin side of a fetch (M3.2).
+///
+/// The mirror image of [`RenderRequest`]: that one is the OS asking *us* for bytes we
+/// promised; this is core asking the *adapter* for bytes of a copy we originated, because
+/// a peer is pasting it. The direction of the channel is flipped accordingly — core holds
+/// the `Sender` (see [`ClipboardAdapter::local_reads`]) and the adapter serves.
+///
+/// Async through a `oneshot` for the same reason as `RenderRequest`: reading a file range
+/// is real I/O and must not block a core task, and the trait stays object-safe.
+#[derive(Debug)]
+pub struct LocalRead {
+    /// Which snapshot to read (core resolved `seq → CaptureId` via its pin store).
+    pub capture: CaptureId,
+    pub format: Mime,
+    /// Which file of the capture's group; `None` for non-file formats.
+    pub file_idx: Option<u32>,
+    /// The slice being read; `None` means all of it. For files this is what makes locked
+    /// decision #8's "only the bytes actually read" true.
+    pub range: Option<ByteRange>,
+    pub reply: oneshot::Sender<Result<Payload, LocalReadError>>,
 }
 
 /// One implementation per platform (Windows / Linux-X11 / Linux-Wayland / Android-JNI),
@@ -80,6 +116,20 @@ pub trait ClipboardAdapter: Send + Sync + 'static {
     /// why this is deferred rather than a synchronous callback (Finding D).
     fn render_requests(&self) -> mpsc::UnboundedReceiver<RenderRequest>;
 
+    /// Stream of finished transfer **jobs** — the adapter announcing that a `JobId` it put
+    /// on a [`FormatReq`] will issue no further reads. Yields the receiver once; core
+    /// drives it and tells the origin, which then drops the job's pin (SPEC.md §4).
+    ///
+    /// Core cannot infer this. A job ends when the pasting app lets go of what it was
+    /// given — an `IStream` being released, say — which only the adapter observes, and
+    /// which may be many reads after the first (M3 ruling Q12). Emitting a job id here is
+    /// what turns the origin's pin from "released eventually, by an idle sweep" into
+    /// "released now".
+    ///
+    /// A job that is never announced is not a correctness problem, only a wasteful one:
+    /// the origin's sweep collects it. Announcing a job id twice is harmless.
+    fn job_ends(&self) -> mpsc::UnboundedReceiver<JobId>;
+
     /// Set our local head as a lazy promise advertising `offer`'s formats, holding no
     /// bytes (locked decision #2; SPEC.md §1 "Promise"). Quick platform-thread marshal,
     /// no network I/O.
@@ -90,9 +140,29 @@ pub trait ClipboardAdapter: Send + Sync + 'static {
     /// `[CRYSTALLIZE: head/eager milestone]` (M5); this method only carries the bytes.
     fn set_eager(&self, offer: &Offer, payload: Payload) -> Result<(), AdapterError>;
 
+    /// **The origin-side inversion** (M3.2). A sender core keeps to ask the adapter for
+    /// bytes of a copy *we* originated, when a peer fetches it. Cloneable; the adapter owns
+    /// the receiver and serves reads on whatever thread it must (the Windows pump, a
+    /// blocking pool, …).
+    ///
+    /// Note the shape is the reverse of [`Self::render_requests`]: there the adapter pushes
+    /// and core answers; here core pushes and the adapter answers. The two directions are
+    /// genuinely different flows — a paste *we* perform vs. a paste performed *against us*
+    /// — and collapsing them into one channel would conflate them.
+    fn local_reads(&self) -> mpsc::Sender<LocalRead>;
+
+    /// Release a capture: no head and no in-flight job reference it any more, so its
+    /// snapshot (and any file paths it holds) can be dropped.
+    ///
+    /// Core owns this decision — the pin lifecycle is core's (locked decision #6: a
+    /// capture lives while it is the head **or** any accepted fetch still needs it, and a
+    /// new copy never releases a pinned one). The adapter just forgets it. Releasing an
+    /// unknown id is a no-op, not an error.
+    fn release_capture(&self, capture: CaptureId);
+
     // NOTE (M1 decision — streaming, mstsc-style): there is no `materialize_files`. Files
     // are advertised by `set_promise` (carried in `Offer.files`) and their contents are
-    // served on demand through `render_requests` above — keyed by `FormatReq.file_idx`
-    // (and, in M3, a byte range) — streaming origin→destination with no local staging.
-    // See locked decision #8 (amended M1) and `protocol::FileEntry`.
+    // served on demand through `render_requests` above — keyed by `FormatReq.file_idx` and
+    // a byte range — streaming origin→destination with no local staging. See locked
+    // decision #8 (amended M1) and `protocol::FileEntry`.
 }

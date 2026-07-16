@@ -12,12 +12,22 @@ path = "src/main.rs"
 [dependencies]
 clipline-core = { path = "../clipline-core" }
 # Async runtime for the engine (CONVENTIONS.md). The consumer owns the runtime; core
-# does not spin one up. `sync`/`time` back the adapter's channels + render deadline.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+# does not spin one up. `sync`/`time` back the adapter's channels + render deadline;
+# `signal` is the dev runner's Ctrl-C shutdown.
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "signal",
+] }
 # Structured logging (tracing-style, CONVENTIONS.md) — the binary installs the
 # subscriber; core only emits.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Content fingerprint for same-origin duplicate suppression (LocalCopy.content_hash).
+# Already in the tree via clipline-core; matched version.
+blake3 = "1"
 
 # Windows clipboard adapter (injected into core; M1). `windows` = Win32 clipboard +
 # delayed render + OLE virtual files; `image` = PNG<->DIB codec (PNG-on-wire, SPEC §9).

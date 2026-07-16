@@ -1,36 +1,45 @@
-//! Mesh control plane (M2.2): TLS-over-TCP connections to peers, the `Presence`
-//! handshake, and the peer table. **Mesh I/O is core's own** — unlike the injected
-//! clipboard adapter, the mesh lives in `clipline-core`.
+//! The mesh (M2.2 control plane; M3.1 bulk plane): TLS-over-TCP connections to peers, the
+//! `Presence` handshake, and the peer table. **Mesh I/O is core's own** — unlike the
+//! injected clipboard adapter, the mesh lives in `clipline-core`.
 //!
-//! Locked decision **#7** (TLS-over-TCP, one listening port, a per-peer control
-//! connection, control never throttled) and **#10** (explicit endpoints, trusted LAN, no
-//! auth) govern this module; D6/D7/D9 pin the trust model, heartbeat cadence, and the
-//! connection-dedup rule. Received `Offer`s are funneled to the Head Manager and outbound
-//! offers broadcast via [`MeshHandle`] (M2.3); on connect each side sends a `HeadQuery` and
-//! answers with its current head so late joiners sync (M2.4). The bulk plane (`FetchReq` →
-//! byte stream) is M3.
+//! Locked decision **#7** (TLS-over-TCP, one listening port, control + bulk per peer,
+//! control never throttled) and **#10** (explicit endpoints, trusted LAN, no auth) govern
+//! this module; D6/D7/D9 pin the trust model, heartbeat cadence, and the connection-dedup
+//! rule. Received `Offer`s are funneled to the Head Manager and outbound offers broadcast
+//! via [`MeshHandle`] (M2.3); on connect each side sends a `HeadQuery` and answers with its
+//! current head so late joiners sync (M2.4).
+//!
+//! Both planes share the **one listening port**: a dialer writes a [`ConnRole`] byte right
+//! after the TLS handshake and the accepter dispatches on it (M3.1). See [`bulk`] for the
+//! bulk plane's directional/serial model.
 
+mod bulk;
 mod peer;
 mod tls;
 
+pub use bulk::FetchSource;
 pub use peer::PeerInfo;
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use rustls::pki_types::ServerName;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, watch, Notify};
+use tokio::sync::{mpsc, watch, Notify, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tokio_util::codec::Framed;
 
-use crate::error::{CodecError, MeshError};
+use crate::error::{CodecError, FetchError, MeshError};
 use crate::protocol::{Offer, OriginId};
-use crate::wire::{ControlCodec, ControlMsg, ErrorCode, PROTOCOL_VERSION};
+use crate::wire::{
+    ConnRole, ControlCodec, ControlMsg, ErrorCode, FetchReq, JobId, PROTOCOL_VERSION,
+};
+use bulk::BulkPool;
 use peer::{PeerTable, Registration};
 
 /// Default listening/dial port when config omits one. The docs did not settle a port;
@@ -49,6 +58,22 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Delay between dial attempts to a configured peer (connect failure or after a drop).
 const RECONNECT_BACKOFF: Duration = Duration::from_secs(1);
 
+/// Disable Nagle on a freshly-established connection (both planes).
+///
+/// A chunked request/response protocol pays Nagle's ~40 ms coalescing delay on *every*
+/// round trip; delayed-ACK compounds it. On a large file that is seconds-to-minutes of pure
+/// stall — the M3 manual gate's "it works but it's slow". RDP/mstsc set this too.
+///
+/// This is a latency fix, **not** throttling (M5): throttling deliberately *limits* the
+/// rate; this removes an artificial stall. Applied to control and bulk alike — the control
+/// plane's tiny frames are the worst case for Nagle. Best-effort: a failure only means
+/// slower transfers, never a broken connection.
+fn disable_nagle(tcp: &TcpStream) {
+    if let Err(e) = tcp.set_nodelay(true) {
+        tracing::debug!(error = %e, "could not set TCP_NODELAY (transfers may be slower)");
+    }
+}
+
 /// Topology the binary hands to core (config-file/CLI parsing lives in the binary —
 /// CONVENTIONS.md, core reads no files). `peers` is a **dial-seed** list; inbound from
 /// unlisted peers is also accepted (SPEC.md §10; ⚠️ Phase 2 admission gate).
@@ -65,25 +90,25 @@ pub struct Mesh {
     local_addr: SocketAddr,
     table: Arc<PeerTable>,
     connector: TlsConnector,
+    /// The fetcher side of the bulk plane: per-origin connections we dialed (M3.1).
+    bulk: Arc<BulkPool>,
     shutdown_tx: watch::Sender<bool>,
-    shutdown_rx: watch::Receiver<bool>,
-    /// Received `Offer`s from every connection are funneled here for the Head Manager
-    /// (M2.3). Threaded into each `read_loop`; the receiver is taken once via
-    /// [`Mesh::take_offers`].
-    offer_tx: mpsc::UnboundedSender<Offer>,
+    /// Received `Offer`s from every connection are funneled to the Head Manager (M2.3) via
+    /// the sender in [`ConnCtx`]; this receiver is taken once via [`Mesh::take_offers`].
     offer_rx: Mutex<Option<mpsc::UnboundedReceiver<Offer>>>,
-    /// Reader half of the Head Manager's head `watch`, used to answer late-join
-    /// `HeadQuery`s (M2.4). `None` when the mesh runs without a Head Manager (pure
-    /// transport, e.g. connectivity tests) — then a `HeadReply` carries no head.
-    head: Option<watch::Receiver<Option<Offer>>>,
+    /// The template every connection task is cloned from (accept and dial alike). Holds
+    /// the head `watch` reader, the offer sender, and the shutdown receiver.
+    ctx: ConnCtx,
     tasks: Mutex<Vec<JoinHandle<()>>>,
 }
 
-/// A cheap, cloneable handle for broadcasting on the control plane (offer broadcast,
-/// M2.3). Held by the Head Manager; does not keep the mesh alive on its own.
+/// A cheap, cloneable handle onto a running mesh: broadcast on the control plane (M2.3)
+/// and fetch on the bulk plane (M3.1). Held by the Head Manager and the Transfer Engine;
+/// does not keep the mesh alive on its own.
 #[derive(Clone)]
 pub struct MeshHandle {
     table: Arc<PeerTable>,
+    bulk: Arc<BulkPool>,
 }
 
 impl MeshHandle {
@@ -91,6 +116,21 @@ impl MeshHandle {
     /// locked decision #7). Best-effort and non-blocking (see [`PeerTable::broadcast`]).
     pub fn broadcast(&self, msg: ControlMsg) {
         self.table.broadcast(msg);
+    }
+
+    /// Fetch one format's bytes from its origin over the bulk plane — see [`Mesh::fetch`].
+    pub async fn fetch(
+        &self,
+        req: FetchReq,
+    ) -> Result<mpsc::Receiver<Result<Bytes, FetchError>>, FetchError> {
+        self.bulk.fetch(req).await
+    }
+
+    /// Tell `origin` we are finished with `job_id` so it releases the job's pin — on normal
+    /// completion or on an explicit abort (SPEC.md §4/§6). Best-effort; see
+    /// [`bulk::BulkPool::end_job`].
+    pub async fn end_job(&self, origin: OriginId, job_id: JobId) {
+        self.bulk.end_job(origin, job_id).await;
     }
 }
 
@@ -103,6 +143,7 @@ impl Mesh {
         listen_port: u16,
         origin_id: OriginId,
         head: Option<watch::Receiver<Option<Offer>>>,
+        fetch_source: Option<Arc<dyn FetchSource>>,
     ) -> Result<Mesh, MeshError> {
         let (client_cfg, server_cfg) = tls::build_tls()?;
         let bind_addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, listen_port));
@@ -116,47 +157,58 @@ impl Mesh {
         let table = Arc::new(PeerTable::new(origin_id));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (offer_tx, offer_rx) = mpsc::unbounded_channel();
+        let connector = TlsConnector::from(client_cfg);
 
-        let acceptor = TlsAcceptor::from(server_cfg);
         let ctx = ConnCtx {
             my_id: origin_id,
+            // The bound port, not the requested one: `0` means "OS picks" (tests), and a
+            // peer must be told the real one to dial us back for bulk.
+            listen_port: local_addr.port(),
             table: table.clone(),
-            offer_tx: offer_tx.clone(),
-            head: head.clone(),
-            shutdown: shutdown_rx.clone(),
+            offer_tx,
+            head,
+            fetch_source,
+            serve_permit: Arc::new(Semaphore::new(1)),
+            shutdown: shutdown_rx,
         };
-        let accept = tokio::spawn(accept_loop(listener, acceptor, ctx));
+        let acceptor = TlsAcceptor::from(server_cfg);
+        let accept = tokio::spawn(accept_loop(listener, acceptor, ctx.clone()));
 
         Ok(Mesh {
             origin_id,
             local_addr,
+            bulk: Arc::new(BulkPool::new(origin_id, table.clone(), connector.clone())),
             table,
-            connector: TlsConnector::from(client_cfg),
+            connector,
             shutdown_tx,
-            shutdown_rx,
-            offer_tx,
             offer_rx: Mutex::new(Some(offer_rx)),
-            head,
+            ctx,
             tasks: Mutex::new(vec![accept]),
         })
+    }
+
+    /// Fetch one format's bytes from its origin over the bulk plane (M3.1). Chunks arrive
+    /// in order on the returned receiver; it ends after the last chunk (clean EOF) or a
+    /// single `Err`.
+    ///
+    /// This is the destination side of SPEC.md §1 "Fetch" — the call M3.3's `RenderSource`
+    /// makes to answer a real paste.
+    pub async fn fetch(
+        &self,
+        req: FetchReq,
+    ) -> Result<mpsc::Receiver<Result<Bytes, FetchError>>, FetchError> {
+        self.bulk.fetch(req).await
     }
 
     /// Start dialing the given peers (the dial-seed list). Each gets a task that connects,
     /// handshakes, serves, and re-dials on drop with backoff.
     pub fn connect(&self, peers: Vec<SocketAddr>) {
-        let ctx = ConnCtx {
-            my_id: self.origin_id,
-            table: self.table.clone(),
-            offer_tx: self.offer_tx.clone(),
-            head: self.head.clone(),
-            shutdown: self.shutdown_rx.clone(),
-        };
         let mut tasks = self.tasks.lock().expect("mesh tasks lock");
         for addr in peers {
             tasks.push(tokio::spawn(dial_loop(
                 addr,
                 self.connector.clone(),
-                ctx.clone(),
+                self.ctx.clone(),
             )));
         }
     }
@@ -166,8 +218,9 @@ impl Mesh {
         config: MeshConfig,
         origin_id: OriginId,
         head: Option<watch::Receiver<Option<Offer>>>,
+        fetch_source: Option<Arc<dyn FetchSource>>,
     ) -> Result<Mesh, MeshError> {
-        let mesh = Mesh::bind(config.listen_port, origin_id, head).await?;
+        let mesh = Mesh::bind(config.listen_port, origin_id, head, fetch_source).await?;
         mesh.connect(config.peers);
         Ok(mesh)
     }
@@ -185,10 +238,12 @@ impl Mesh {
         self.table.list()
     }
 
-    /// A broadcast handle for the Head Manager (M2.3).
+    /// A cloneable handle for the Head Manager (broadcast, M2.3) and the Transfer Engine
+    /// (fetch, M3.3).
     pub fn handle(&self) -> MeshHandle {
         MeshHandle {
             table: self.table.clone(),
+            bulk: self.bulk.clone(),
         }
     }
 
@@ -215,11 +270,20 @@ impl Drop for Mesh {
 #[derive(Clone)]
 struct ConnCtx {
     my_id: OriginId,
+    /// Our own listening port, advertised in `Presence` so peers can dial us for bulk
+    /// (M3.1 — see `ControlMsg::Presence::listen_port`).
+    listen_port: u16,
     table: Arc<PeerTable>,
     offer_tx: mpsc::UnboundedSender<Offer>,
     /// Head `watch` reader for answering `HeadQuery` (`None` = pure transport). See
     /// [`Mesh::bind`].
     head: Option<watch::Receiver<Option<Offer>>>,
+    /// Origin-side byte producer for inbound fetches (`None` = pure transport). M3.1
+    /// mocks it; M3.2 implements it over the adapter + pin store.
+    fetch_source: Option<Arc<dyn FetchSource>>,
+    /// One in-flight served transfer per node, across every accepted bulk connection
+    /// (M3 ruling Q9; SPEC.md §6 row 5).
+    serve_permit: Arc<Semaphore>,
     shutdown: watch::Receiver<bool>,
 }
 
@@ -238,18 +302,56 @@ async fn accept_loop(listener: TcpListener, acceptor: TlsAcceptor, ctx: ConnCtx)
                         continue;
                     }
                 };
+                disable_nagle(&tcp); // both planes accept here (M3.5 perf)
                 let acceptor = acceptor.clone();
                 let ctx = ctx.clone();
                 tokio::spawn(async move {
                     match acceptor.accept(tcp).await {
-                        Ok(tls) => {
-                            handle_connection(tls, addr, false, ctx).await;
-                        }
+                        Ok(tls) => dispatch_role(tls, addr, ctx).await,
                         Err(e) => tracing::debug!(%addr, error = %e, "inbound TLS handshake failed"),
                     }
                 });
             }
         }
+    }
+}
+
+/// Read the [`ConnRole`] byte an inbound dialer writes right after the TLS handshake and
+/// hand the connection to the matching plane (M3.1; locked decision #7 — one listening
+/// port). An unknown role is closed: there is nothing sensible to do with it, and this is
+/// the same connection an admission gate would reject in Phase 2.
+async fn dispatch_role<S>(mut stream: S, addr: SocketAddr, ctx: ConnCtx)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let mut role = [0u8; 1];
+    // A handshake budget applies here too: a peer that connects and says nothing must not
+    // hold the task forever.
+    match tokio::time::timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut role)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            tracing::debug!(%addr, error = %e, "no role byte; closing");
+            return;
+        }
+        Err(_) => {
+            tracing::debug!(%addr, "role byte timed out; closing");
+            return;
+        }
+    }
+    match ConnRole::from_byte(role[0]) {
+        Some(ConnRole::Control) => {
+            handle_connection(stream, addr, false, ctx).await;
+        }
+        Some(ConnRole::Bulk) => {
+            bulk::serve_bulk(
+                stream,
+                addr,
+                ctx.fetch_source.clone(),
+                ctx.serve_permit.clone(),
+            )
+            .await;
+        }
+        None => tracing::debug!(%addr, role = role[0], "unknown connection role; closing"),
     }
 }
 
@@ -262,9 +364,13 @@ async fn dial_loop(addr: SocketAddr, connector: TlsConnector, ctx: ConnCtx) {
         }
         let attempt = async {
             let tcp = TcpStream::connect(addr).await?;
-            // Name is cosmetic (client accepts any cert); use the peer IP so it is 'static.
+            disable_nagle(&tcp); // control-plane dial (M3.5 perf)
+                                 // Name is cosmetic (client accepts any cert); use the peer IP so it is 'static.
             let server_name = ServerName::IpAddress(addr.ip().into());
-            connector.connect(server_name, tcp).await
+            let mut tls = connector.connect(server_name, tcp).await?;
+            // Declare the plane before any framing (M3.1) — the accepter is waiting on it.
+            tls.write_all(&[ConnRole::Control.as_byte()]).await?;
+            Ok::<_, std::io::Error>(tls)
         };
         tokio::select! {
             _ = shutdown.changed() => return,
@@ -290,7 +396,8 @@ async fn dial_loop(addr: SocketAddr, connector: TlsConnector, ctx: ConnCtx) {
 async fn handshake<S>(
     framed: &mut Framed<S, ControlCodec>,
     my_id: OriginId,
-) -> Result<OriginId, MeshError>
+    my_listen_port: u16,
+) -> Result<(OriginId, u16), MeshError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -298,6 +405,7 @@ where
         .send(ControlMsg::Presence {
             origin_id: my_id,
             protocol_version: PROTOCOL_VERSION,
+            listen_port: my_listen_port,
         })
         .await?;
 
@@ -310,6 +418,7 @@ where
         ControlMsg::Presence {
             origin_id,
             protocol_version,
+            listen_port,
         } => {
             if protocol_version != PROTOCOL_VERSION {
                 let _ = framed
@@ -322,7 +431,7 @@ where
                     ours: PROTOCOL_VERSION,
                 });
             }
-            Ok(origin_id)
+            Ok((origin_id, listen_port))
         }
         _ => {
             let _ = framed
@@ -349,14 +458,16 @@ where
 {
     let ConnCtx {
         my_id,
+        listen_port,
         table,
         offer_tx,
         head,
         mut shutdown,
+        ..
     } = ctx;
     let mut framed = Framed::new(stream, ControlCodec);
-    let peer_id = match handshake(&mut framed, my_id).await {
-        Ok(id) => id,
+    let (peer_id, peer_listen_port) = match handshake(&mut framed, my_id, listen_port).await {
+        Ok(pair) => pair,
         Err(e) => {
             tracing::debug!(%addr, error = %e, "handshake failed; closing");
             return false;
@@ -373,6 +484,7 @@ where
         peer_id,
         initiated_by_us,
         addr,
+        peer_listen_port,
         out_tx.clone(),
         supersede.clone(),
     ) {
@@ -398,7 +510,7 @@ where
     let (sink, stream) = framed.split();
     tokio::select! {
         _ = read_loop(stream, peer_id, offer_tx, head, out_tx) => {}
-        _ = write_loop(sink, out_rx, my_id) => {}
+        _ = write_loop(sink, out_rx, my_id, listen_port) => {}
         _ = supersede.notified() => tracing::debug!(peer = %peer_id, "superseded by canonical connection"),
         _ = shutdown.changed() => tracing::debug!(peer = %peer_id, "mesh shutting down"),
     }
@@ -463,8 +575,12 @@ async fn read_loop<St>(
 
 /// Send an idle `Presence` heartbeat every [`HEARTBEAT`], plus any queued outbound frame
 /// (M2.3 offers). Ends when the sink errors (connection dead) or all senders drop.
-async fn write_loop<Si>(mut sink: Si, mut out_rx: mpsc::Receiver<ControlMsg>, my_id: OriginId)
-where
+async fn write_loop<Si>(
+    mut sink: Si,
+    mut out_rx: mpsc::Receiver<ControlMsg>,
+    my_id: OriginId,
+    listen_port: u16,
+) where
     Si: futures_util::Sink<ControlMsg, Error = CodecError> + Unpin,
 {
     let mut heartbeat =
@@ -472,7 +588,11 @@ where
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
-                let hb = ControlMsg::Presence { origin_id: my_id, protocol_version: PROTOCOL_VERSION };
+                let hb = ControlMsg::Presence {
+                    origin_id: my_id,
+                    protocol_version: PROTOCOL_VERSION,
+                    listen_port,
+                };
                 if sink.send(hb).await.is_err() {
                     break;
                 }

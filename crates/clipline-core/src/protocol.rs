@@ -8,7 +8,7 @@
 //! `ContentHash` (BLAKE3 manifest digest, D5). Field *names* are the ones fixed in
 //! SPEC.md / ARCHITECTURE.md and are reused verbatim (anti-drift rule, CLAUDE.md).
 
-use std::path::PathBuf;
+use std::path::{Component, Path};
 
 /// Per-origin sequence number driving the head ordering (SPEC.md §1; locked decision #3:
 /// newest offer wins = highest `seq`, ties broken by `origin_id`).
@@ -80,7 +80,7 @@ impl ContentHash {
             h.update(&fmt.size.to_le_bytes());
         }
         for file in files {
-            h.update(file.rel_path.to_string_lossy().as_bytes());
+            h.update(file.rel_path.as_bytes());
             h.update(&file.size.to_le_bytes());
         }
         ContentHash(*h.finalize().as_bytes())
@@ -133,15 +133,35 @@ pub struct FormatDesc {
 /// carries a manifest of names+sizes, no bytes). `rel_path` preserves folder structure
 /// within the transfer; contents are fetched by this entry's index (`FormatReq.file_idx`).
 ///
-/// NOTE (M2): `rel_path` is a `PathBuf` and `serde`-serializes as the platform `OsStr`.
-/// That is fine for the M2 Windows↔Windows mesh, but a cross-OS wire needs a normalized
-/// UTF-8, forward-slash relative string. Finalizing that representation is deferred to
-/// **M3** (when file bytes actually ride the wire) / **M-Linux**; M2 tests use non-file
-/// offers, so it is not yet exercised.
+/// `rel_path` is a **normalized UTF-8, forward-slash, relative** string (M3.2 — the M2
+/// `PathBuf` `serde`-serialized as the platform `OsStr`, which would not survive a
+/// cross-OS wire). Build it with [`FileEntry::new`], which enforces the normalization; the
+/// origin keeps the real local path privately in its capture and never puts it on the wire
+/// (it would leak the sender's filesystem layout and mean nothing remotely).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileEntry {
-    pub rel_path: PathBuf,
+    pub rel_path: String,
     pub size: u64,
+}
+
+impl FileEntry {
+    /// Normalize a source-relative path for the wire: forward slashes, no drive letter, no
+    /// leading separator, and `.`/`..` components dropped (a manifest entry must never
+    /// escape the destination's target directory).
+    pub fn new(rel_path: impl AsRef<Path>, size: u64) -> FileEntry {
+        let rel_path = rel_path
+            .as_ref()
+            .components()
+            .filter_map(|c| match c {
+                Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+                // Prefix (C:), RootDir, CurDir, ParentDir are all dropped: the wire form is
+                // relative and inert by construction.
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+        FileEntry { rel_path, size }
+    }
 }
 
 /// The offer broadcast on copy: metadata only, no bytes (SPEC.md §1; locked
@@ -195,12 +215,53 @@ pub enum SensitivityHint {
     Sensitive,
 }
 
+/// Handle to an adapter-side **capture** of one local copy (M3.2).
+///
+/// The origin must be able to serve a seq's bytes *after* the OS clipboard has moved on —
+/// a new copy must not disturb an accepted fetch (locked decision #6; SPEC.md §6 row 2).
+/// The OS clipboard holds exactly one thing, so the adapter snapshots each local copy and
+/// hands core this opaque handle to it.
+///
+/// Core never learns what is inside. The adapter chooses per format, and the choice is
+/// forced by the locked decisions pulling opposite ways:
+/// * **non-file formats** — the bytes are snapshotted at copy time. Nothing else can
+///   survive the next copy overwriting the clipboard.
+/// * **files** — only the *paths* are recorded, never the bytes (locked decision #8: file
+///   bytes move on a real paste and only the bytes actually read). A pin on a file is a
+///   pin on a path; it does not stop the user editing or deleting it, and a copy does not
+///   touch the old files, which is exactly what SPEC.md §6 row 2 requires.
+///
+/// The adapter allocates these; core maps `seq → CaptureId` and tells the adapter when one
+/// is unreachable via [`crate::adapter::ClipboardAdapter::release_capture`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CaptureId(pub u64);
+
+impl std::fmt::Display for CaptureId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// A local copy detected by the adapter's `watch` (ARCHITECTURE.md copy flow —
 /// `LocalCopy { formats, sizes, sensitivity_hint }`; sizes live inside `FormatDesc`).
-/// No bytes. Core-side consumption (→ build `Offer`, broadcast) is M2.
+/// No bytes cross this seam: `capture` is the handle to the adapter's snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalCopy {
+    /// Every format the copy is available in — never pre-flattened (locked decision #9;
+    /// the destination picks).
     pub formats: Vec<FormatDesc>,
+    /// The file group, if this copy is files (SPEC.md §9). Empty otherwise. Wire-form
+    /// manifest only: names + sizes, no paths, no bytes.
+    pub files: Vec<FileEntry>,
+    /// The adapter's snapshot of this copy, for serving fetches later (M3.2).
+    pub capture: CaptureId,
+    /// A fingerprint of the copy's **actual content**, for same-origin duplicate
+    /// suppression in the head manager (a source app that writes the clipboard twice per
+    /// copy). The adapter computes it — it has the bytes; core does not. Unlike the offer's
+    /// [`ContentHash`] (a *manifest* digest, so files stay lazy — decision #5), this fingers
+    /// the content, so two different same-size copies do not collide. The adapter's exact
+    /// formula is private; core only ever tests equality of consecutive local copies.
+    pub content_hash: [u8; 32],
     pub sensitivity_hint: SensitivityHint,
 }
 
