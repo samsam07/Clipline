@@ -104,6 +104,13 @@ throttled):
 - `SignalDriven` — posture flips on an abstract external signal. The **signal-source
   binding is Phase 2**; the core only consumes an abstract "signal asserted" input.
 
+> `[CRYSTALLIZE: throttle milestone]` — decide *which kind* here too, not just the rate: a
+> **configured cap / signal-driven backoff** (the design above) vs. **adaptive** throttling
+> that senses available bandwidth and leaves headroom automatically. The three modes above
+> are the former; adaptive is a possible fourth mode and a new decision if we want it. The
+> motivating case (don't saturate Wi-Fi while a GPU stream runs) is served by `SignalDriven`
+> today.
+
 ## 8. Lifecycle (three toggles + a gate)
 
 The process is **long-lived** (clipboard ownership + on-demand serving require it).

@@ -151,6 +151,16 @@ operation confirmed (no GUI required for daemon use).
   bypasses the shared clipboard).
 - Headless CLI clipboard primitives (`clip copy` / `clip paste` over the mesh).
 - Clipboard-history UI / ring buffer beyond what the OS historian provides.
+- **File/folder transfer fidelity (M3 omissions — deferred here deliberately).** M3 moves a
+  file's *bytes* and rebuilds the folder tree (incl. empty dirs); these are the gaps left:
+  - **Virtual-file sources** — copying *out of* a zip, or from any app offering an
+    `IDataObject` / `FILEDESCRIPTOR` source rather than `CF_HDROP` real paths (e.g. Outlook
+    attachments). Only real filesystem paths are captured today.
+  - **File metadata** — only size + contents cross. Timestamps, attributes (read-only,
+    hidden), permissions/ACLs, and NTFS alternate data streams are dropped; pasted files get
+    fresh timestamps.
+  - **Symlinks inside a copied tree** — skipped for loop safety; not recreated.
+  - **Very deep trees** — capped at depth 64 at capture.
 - **Deeper transfer pipelining:** M3 shipped `TCP_NODELAY`, a bigger wire chunk, and
   **window read-ahead** (fetch a 4 MiB window per round trip + prefetch the next while the
   app consumes the current), lifting paste throughput from ~2.7 MB/s off the round-trip

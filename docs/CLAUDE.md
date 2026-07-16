@@ -104,6 +104,11 @@ For every unit of work:
 4. **Human review** — surface what you did, what you decided, and any neither-category
    question you hit.
 
+Automated tests are necessary but not sufficient: the real OS (Explorer, the clipboard
+historian, another machine's COM apartment) drives the platform interfaces from outside,
+which no in-process test reaches. `TEST.md` is the **living end-to-end manual flow** — run it
+before calling a milestone done, and extend it there as features land.
+
 ## Scope discipline
 
 v1 is intentionally small. Out of scope for v1 (do not build unprompted):
