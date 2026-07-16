@@ -82,6 +82,7 @@ impl ContentHash {
         for file in files {
             h.update(file.rel_path.as_bytes());
             h.update(&file.size.to_le_bytes());
+            h.update(&[file.is_dir as u8]);
         }
         ContentHash(*h.finalize().as_bytes())
     }
@@ -129,39 +130,59 @@ pub struct FormatDesc {
     pub size: u64,
 }
 
-/// One file in an offer's file group (SPEC.md §9 — files are by-reference; the offer
+/// One entry in an offer's file group (SPEC.md §9 — files are by-reference; the offer
 /// carries a manifest of names+sizes, no bytes). `rel_path` preserves folder structure
-/// within the transfer; contents are fetched by this entry's index (`FormatReq.file_idx`).
+/// within the transfer; a file's contents are fetched by this entry's index
+/// (`FormatReq.file_idx`).
+///
+/// `is_dir` marks an **empty directory** to recreate at the destination. Non-empty
+/// directories are implied by their files' paths and get no entry; only a directory with no
+/// file descendants needs one, or it would vanish (the shell rebuilds folders from file
+/// paths). A directory entry has `size == 0` and is never fetched.
 ///
 /// `rel_path` is a **normalized UTF-8, forward-slash, relative** string (M3.2 — the M2
 /// `PathBuf` `serde`-serialized as the platform `OsStr`, which would not survive a
-/// cross-OS wire). Build it with [`FileEntry::new`], which enforces the normalization; the
-/// origin keeps the real local path privately in its capture and never puts it on the wire
-/// (it would leak the sender's filesystem layout and mean nothing remotely).
+/// cross-OS wire). Build it with [`FileEntry::new`] / [`FileEntry::new_dir`], which enforce
+/// the normalization; the origin keeps the real local path privately in its capture and
+/// never puts it on the wire (it would leak the sender's filesystem layout).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileEntry {
     pub rel_path: String,
     pub size: u64,
+    pub is_dir: bool,
 }
 
 impl FileEntry {
-    /// Normalize a source-relative path for the wire: forward slashes, no drive letter, no
-    /// leading separator, and `.`/`..` components dropped (a manifest entry must never
-    /// escape the destination's target directory).
+    /// A file entry: normalize `rel_path` for the wire (forward slashes, no drive letter, no
+    /// leading separator, `.`/`..` dropped so an entry can never escape the target dir).
     pub fn new(rel_path: impl AsRef<Path>, size: u64) -> FileEntry {
-        let rel_path = rel_path
-            .as_ref()
-            .components()
-            .filter_map(|c| match c {
-                Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
-                // Prefix (C:), RootDir, CurDir, ParentDir are all dropped: the wire form is
-                // relative and inert by construction.
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("/");
-        FileEntry { rel_path, size }
+        FileEntry {
+            rel_path: normalize_rel(rel_path.as_ref()),
+            size,
+            is_dir: false,
+        }
     }
+
+    /// An empty-directory entry (size 0), so a folder with no files is still recreated.
+    pub fn new_dir(rel_path: impl AsRef<Path>) -> FileEntry {
+        FileEntry {
+            rel_path: normalize_rel(rel_path.as_ref()),
+            size: 0,
+            is_dir: true,
+        }
+    }
+}
+
+/// Forward-slash, relative, inert-by-construction wire form of a source-relative path.
+fn normalize_rel(path: &Path) -> String {
+    path.components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+            // Prefix (C:), RootDir, CurDir, ParentDir are all dropped.
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// The offer broadcast on copy: metadata only, no bytes (SPEC.md §1; locked

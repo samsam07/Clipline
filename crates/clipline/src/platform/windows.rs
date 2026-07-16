@@ -41,6 +41,7 @@ use windows::Win32::Foundation::{
     E_OUTOFMEMORY, E_POINTER, HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, OLE_E_ADVISENOTSUPPORTED,
     STG_E_INVALIDFUNCTION, S_FALSE, S_OK, WIN32_ERROR, WPARAM,
 };
+use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
 use windows::Win32::System::Com::{
     IDataObject, IDataObject_Impl, IEnumFORMATETC, ISequentialStream_Impl, IStream, IStream_Impl,
     DATADIR_GET, DVASPECT_CONTENT, FORMATETC, LOCKTYPE, STATFLAG, STATSTG, STGC, STGMEDIUM,
@@ -61,7 +62,7 @@ use windows::Win32::System::Ole::{
 };
 use windows::Win32::UI::Shell::{
     DragQueryFileW, IDataObjectAsyncCapability, IDataObjectAsyncCapability_Impl,
-    SHCreateStdEnumFmtEtc, FD_FILESIZE, FD_PROGRESSUI, FILEDESCRIPTORW, HDROP,
+    SHCreateStdEnumFmtEtc, FD_ATTRIBUTES, FD_FILESIZE, FD_PROGRESSUI, FILEDESCRIPTORW, HDROP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
@@ -856,12 +857,19 @@ fn collect_path(
                 return;
             }
         };
+        let mut empty = true;
         for child in rd.flatten() {
+            empty = false;
             let child_rel = format!("{}/{}", rel, child.file_name().to_string_lossy());
             collect_path(&child.path(), &child_rel, paths, entries, depth + 1);
         }
-        // An empty directory contributes no file entry — the shell recreates parent dirs
-        // from the file paths, so a truly empty folder is not preserved. Acceptable for v1.
+        // A directory with children is implied by their paths; only a directory with *no*
+        // entries needs its own manifest record, or it would vanish (the shell rebuilds
+        // folders from file paths). The path is kept aligned with the entry but never read.
+        if empty {
+            entries.push(FileEntry::new_dir(rel));
+            paths.push(abs.to_path_buf());
+        }
     }
 }
 
@@ -1077,14 +1085,20 @@ fn build_file_group_descriptor(files: &[FileEntry]) -> Vec<u8> {
         for (j, u) in shell_name.encode_utf16().take(259).enumerate() {
             name[j] = u;
         }
+        // A directory entry (an empty folder to recreate) carries the directory attribute
+        // and no size/progress — the shell makes the folder and never asks for contents.
+        let (flags, attrs) = if entry.is_dir {
+            (FD_ATTRIBUTES.0 as u32, FILE_ATTRIBUTE_DIRECTORY.0)
+        } else {
+            // `FD_FILESIZE`: size is known from the manifest without reading a byte — which
+            // lets the shell show a real progress bar for a streamed file. `FD_PROGRESSUI`:
+            // ask for that UI; a lazy paste is slow by construction and the user must see it
+            // and be able to cancel (SPEC.md §6). M3 manual gate.
+            ((FD_FILESIZE.0 | FD_PROGRESSUI.0) as u32, 0)
+        };
         let fd = FILEDESCRIPTORW {
-            // `FD_FILESIZE`: the size is known from the offer's manifest without reading a
-            // byte — which is what lets the shell show a real progress bar for a file it is
-            // streaming off the network.
-            // `FD_PROGRESSUI`: ask for that progress UI. A lazy paste is slow by
-            // construction, so the user needs to see it happening and be able to cancel it
-            // (SPEC.md §6). M3 manual gate.
-            dwFlags: (FD_FILESIZE.0 | FD_PROGRESSUI.0) as u32,
+            dwFlags: flags,
+            dwFileAttributes: attrs,
             nFileSizeHigh: (entry.size >> 32) as u32,
             nFileSizeLow: (entry.size & 0xFFFF_FFFF) as u32,
             cFileName: name,
@@ -1192,6 +1206,11 @@ impl FileDataObject {
             return Err(DV_E_LINDEX.into());
         }
         let entry = &self.files[lindex as usize];
+        // A directory entry (empty folder) has no contents to stream; the shell creates it
+        // from the descriptor and should never ask. Reject defensively.
+        if entry.is_dir {
+            return Err(DV_E_FORMATETC.into());
+        }
         let stream: IStream = LazyFileStream {
             origin_id: self.origin_id,
             seq: self.seq,
@@ -1686,13 +1705,13 @@ mod tests {
         std::fs::create_dir_all(root.join("sub")).expect("mkdirs");
         std::fs::write(root.join("a.txt"), b"aaa").expect("a");
         std::fs::write(root.join("sub").join("b.txt"), b"bbbbb").expect("b");
-        std::fs::create_dir_all(root.join("empty")).expect("empty");
+        // (Empty-directory handling has its own test.)
 
         let mut paths = Vec::new();
         let mut entries = Vec::new();
         collect_path(&root, "mydir", &mut paths, &mut entries, 0);
 
-        // Two files; the empty dir contributes nothing.
+        // Two files; non-empty dirs (mydir, sub) are implied by the file paths, no entries.
         assert_eq!(entries.len(), 2, "both files, no dir entries");
         assert_eq!(
             paths.len(),
@@ -1718,6 +1737,53 @@ mod tests {
         for p in &paths {
             assert!(p.is_absolute() || p.exists(), "recorded a real path");
         }
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Empty directories are preserved as directory entries (an empty folder must survive
+    /// the paste); non-empty ones are implied by their files and get no entry.
+    #[test]
+    fn collect_path_preserves_empty_directories() {
+        let base = std::env::temp_dir().join(format!("clipline-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("mydir");
+        std::fs::create_dir_all(root.join("hasfile")).expect("mkdirs");
+        std::fs::create_dir_all(root.join("empty")).expect("empty");
+        std::fs::create_dir_all(root.join("nested").join("deep_empty")).expect("nested");
+        std::fs::write(root.join("hasfile").join("f.txt"), b"x").expect("f");
+
+        let mut paths = Vec::new();
+        let mut entries = Vec::new();
+        collect_path(&root, "mydir", &mut paths, &mut entries, 0);
+        assert_eq!(
+            paths.len(),
+            entries.len(),
+            "paths and manifest stay aligned"
+        );
+
+        let files: Vec<&str> = entries
+            .iter()
+            .filter(|e| !e.is_dir)
+            .map(|e| e.rel_path.as_str())
+            .collect();
+        let mut dirs: Vec<&str> = entries
+            .iter()
+            .filter(|e| e.is_dir)
+            .map(|e| e.rel_path.as_str())
+            .collect();
+        dirs.sort();
+
+        assert_eq!(files, vec!["mydir/hasfile/f.txt"], "the one file");
+        assert_eq!(
+            dirs,
+            vec!["mydir/empty", "mydir/nested/deep_empty"],
+            "each leaf-empty dir kept; hasfile/ and nested/ implied by descendants",
+        );
+        assert!(
+            entries.iter().filter(|e| e.is_dir).all(|e| e.size == 0),
+            "directory entries have size 0",
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -1810,10 +1876,7 @@ mod tests {
             origin_id: OriginId(1),
             seq: Seq(1),
             formats: vec![],
-            files: vec![FileEntry {
-                rel_path: "note.txt".into(),
-                size: 10,
-            }],
+            files: vec![FileEntry::new("note.txt", 10)],
             hash: ContentHash([0; 32]),
         };
         adapter
@@ -1964,16 +2027,7 @@ mod tests {
         };
         let loop_handle = tokio::spawn(run_render_loop(render_rx, source));
 
-        let files = vec![
-            FileEntry {
-                rel_path: "a.txt".into(),
-                size: 21,
-            },
-            FileEntry {
-                rel_path: "b.txt".into(),
-                size: 9,
-            },
-        ];
+        let files = vec![FileEntry::new("a.txt", 21), FileEntry::new("b.txt", 9)];
 
         let count_probe = count.clone();
         let (job_end_tx, _job_end_rx) = mpsc::unbounded_channel();
