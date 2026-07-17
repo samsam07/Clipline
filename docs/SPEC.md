@@ -102,7 +102,7 @@ throttled):
 - `Throttled` — rate ceiling on the bulk writer (token bucket). Rate value
   `[CRYSTALLIZE: throttle milestone]`.
 - `SignalDriven` — posture flips on an abstract external signal. The **signal-source
-  binding is Phase 2**; the core only consumes an abstract "signal asserted" input.
+  binding is Phase 3**; the core only consumes an abstract "signal asserted" input.
 
 > `[CRYSTALLIZE: throttle milestone]` — decide *which kind* here too, not just the rate: a
 > **configured cap / signal-driven backoff** (the design above) vs. **adaptive** throttling
@@ -130,7 +130,7 @@ These compose to cover every requested behavior:
   control is intentional — e.g. Receive-only on a corporate box: take others' clipboards
   in, never leak yours out).
 
-Gate signal-source bindings (Apollo command hooks, scripts, manual): **Phase 2**.
+Gate signal-source bindings (Apollo command hooks, scripts, manual): **Phase 3**.
 
 ## 9. Format handling
 
@@ -151,19 +151,19 @@ Gate signal-source bindings (Apollo command hooks, scripts, manual): **Phase 2**
   a manifest of `{ rel_path, size }` entries; contents are fetched by file index.
 - **Rich text (HTML)** — `text/html` ↔ `CF_HTML` codec (the byte-offset preamble).
   Owning milestone `[CRYSTALLIZE: html milestone]`.
-- **RTF** — **Phase 2**.
+- **RTF** — **Phase 3**.
 
 ## 10. Discovery
 
 - **v1:** explicit endpoints — peers listed by IP in config (Vox-style). Trusted LAN,
-  no auth (pairing/identity/PSK is Phase 2). The configured peer list is a **dial-seed**
+  no auth (pairing/identity/PSK is Phase 3). The configured peer list is a **dial-seed**
   list only (who a node proactively connects to); on the trusted LAN a node also
   **accepts inbound connections from peers not in its list** and adds them to the peer
   table dynamically, so adding a machine only requires the newcomer to list existing
   nodes — not editing every machine's config.
-  - **Security note (⚠️ Phase 2):** accept-any-inbound on a no-auth LAN means any host
+  - **Security note (⚠️ Phase 3):** accept-any-inbound on a no-auth LAN means any host
     that can reach the listening port joins the mesh (receives and originates offers).
-    This is sound only under the trusted-LAN assumption; **Phase 2 must gate admission**
+    This is sound only under the trusted-LAN assumption; **Phase 3 must gate admission**
     via the pairing / identity-key / PSK mechanism below. The M2 accept path leaves a
     commented seam where that admission check goes.
-- **Phase 2:** mDNS auto-discovery, or hybrid (mDNS discover + identity-key trust gate).
+- **Phase 3:** mDNS auto-discovery, or hybrid (mDNS discover + identity-key trust gate).

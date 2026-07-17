@@ -57,7 +57,7 @@ one is wrong, *stop and ask the human* — do not silently re-decide.
 9. **Preserve the whole format set across the wire**; the destination picks. Never
    pre-flatten formats at the source.
 10. **Discovery v1 = explicit endpoints** (config by IP, Vox-style). mDNS/hybrid is
-    Phase 2.
+    Phase 3.
 11. **Long-lived process is mandatory** (clipboard selection ownership + on-demand
     byte serving die if the process exits). *How* it launches (manual / login /
     service) is free per machine.

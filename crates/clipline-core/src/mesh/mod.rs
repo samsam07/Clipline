@@ -76,7 +76,7 @@ fn disable_nagle(tcp: &TcpStream) {
 
 /// Topology the binary hands to core (config-file/CLI parsing lives in the binary —
 /// CONVENTIONS.md, core reads no files). `peers` is a **dial-seed** list; inbound from
-/// unlisted peers is also accepted (SPEC.md §10; ⚠️ Phase 2 admission gate).
+/// unlisted peers is also accepted (SPEC.md §10; ⚠️ Phase 3 admission gate).
 #[derive(Debug, Clone)]
 pub struct MeshConfig {
     pub listen_port: u16,
@@ -288,7 +288,7 @@ struct ConnCtx {
 }
 
 /// Accept inbound TLS connections until shutdown. Inbound from *unlisted* peers is
-/// accepted (SPEC.md §10 dial-seed model). ⚠️ Phase 2 inserts an admission check here.
+/// accepted (SPEC.md §10 dial-seed model). ⚠️ Phase 3 inserts an admission check here.
 async fn accept_loop(listener: TcpListener, acceptor: TlsAcceptor, ctx: ConnCtx) {
     let mut shutdown = ctx.shutdown.clone();
     loop {
@@ -319,7 +319,7 @@ async fn accept_loop(listener: TcpListener, acceptor: TlsAcceptor, ctx: ConnCtx)
 /// Read the [`ConnRole`] byte an inbound dialer writes right after the TLS handshake and
 /// hand the connection to the matching plane (M3.1; locked decision #7 — one listening
 /// port). An unknown role is closed: there is nothing sensible to do with it, and this is
-/// the same connection an admission gate would reject in Phase 2.
+/// the same connection an admission gate would reject in Phase 3.
 async fn dispatch_role<S>(mut stream: S, addr: SocketAddr, ctx: ConnCtx)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,

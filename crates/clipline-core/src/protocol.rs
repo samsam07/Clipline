@@ -29,7 +29,7 @@ pub struct Seq(pub u64);
 ///
 /// A **random `u128` generated once at process startup** (D4), *not* persisted and
 /// *not* key-derived: uniqueness + a total order for the tiebreak is all the semantics
-/// need, and pairing/identity keys are Phase 2 (locked decision #10). A restarted node
+/// need, and pairing/identity keys are Phase 3 (locked decision #10). A restarted node
 /// simply gets a new identity; its old offers become unreachable and are re-pointed by
 /// background reconciliation (M4).
 #[derive(

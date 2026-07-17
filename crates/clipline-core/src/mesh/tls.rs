@@ -1,14 +1,14 @@
 //! TLS setup for the mesh (D6; locked decisions #7 TLS-over-TCP, #10 trusted-LAN no-auth).
 //!
 //! The mesh is a **trusted LAN with no authentication** — pairing/identity keys are
-//! Phase 2. So TLS here provides **confidentiality only**: each node generates an
+//! Phase 3. So TLS here provides **confidentiality only**: each node generates an
 //! ephemeral self-signed certificate at startup (never persisted — there is no TOFU/cert
 //! pinning without authentication), the server presents it, and the client **accepts any
 //! certificate** ([`AcceptAnyServerCert`]). The handshake *signature* is still verified,
 //! so the peer must possess the key for the cert it presents — that is the one bit of
 //! integrity available without a trust anchor.
 //!
-//! ⚠️ **Phase 2** replaces [`AcceptAnyServerCert`] with a real pairing/identity verifier;
+//! ⚠️ **Phase 3** replaces [`AcceptAnyServerCert`] with a real pairing/identity verifier;
 //! this is the single, well-contained place trust is skipped. The `ring` provider is used
 //! (not the default aws-lc-rs) to avoid a NASM/C build dependency on Windows-first.
 
@@ -48,7 +48,7 @@ pub(crate) fn build_tls() -> Result<(Arc<ClientConfig>, Arc<ServerConfig>), Mesh
     let client = ClientConfig::builder_with_provider(provider.clone())
         .with_safe_default_protocol_versions()
         .map_err(|e| MeshError::Tls(format!("client versions: {e}")))?
-        .dangerous() // the accept-any verifier below is the Phase-2 swap point
+        .dangerous() // the accept-any verifier below is the Phase-3 swap point
         .with_custom_certificate_verifier(verifier)
         .with_no_client_auth();
 
@@ -72,7 +72,7 @@ impl ServerCertVerifier for AcceptAnyServerCert {
         _ocsp_response: &[u8],
         _now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        // No trust anchor to check against (Phase 2 adds one).
+        // No trust anchor to check against (Phase 3 adds one).
         Ok(ServerCertVerified::assertion())
     }
 

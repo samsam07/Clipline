@@ -39,7 +39,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 # --- M2 mesh transport (locked decision #7 TLS-over-TCP; #10 trusted-LAN no-auth) ---
 # rustls over the `ring` provider (D6) — chosen over the default aws-lc-rs to avoid a
 # NASM/C build dependency on Windows-first. Confidentiality only; the trust model is an
-# ephemeral self-signed cert + accept-any verifier (auth is Phase 2, locked #10).
+# ephemeral self-signed cert + accept-any verifier (auth is Phase 3, locked #10).
 rustls = { version = "0.23", default-features = false, features = [
     "ring",
     "std",

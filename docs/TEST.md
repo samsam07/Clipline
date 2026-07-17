@@ -138,7 +138,7 @@ After check 4, look at A: no staging copy anywhere, no temp-dir growth.
   `CF_HDROP`), **file metadata** (timestamps, attributes, permissions, ADS), **symlinks in a
   tree**, and **trees deeper than 64** are not transferred — Phase 2 (`PLAN.md`).
 - **No auth.** TLS is confidentiality only; anyone who reaches the port is a peer (decision
-  #10; pairing is Phase 2). Trusted LAN only — do not test with real secrets.
+  #10; pairing is Phase 3). Trusted LAN only — do not test with real secrets.
 
 ## Result
 
