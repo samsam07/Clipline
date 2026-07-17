@@ -15,7 +15,7 @@ are simply grouped into phases. Where one milestone spans phases (M6), it is spl
 | Milestone / work | Phase | Status |
 |---|---|---|
 | M0 bridge · M1 adapter+Windows · M2 control plane · M3 bulk plane + lazy paste | **1** | ✅ done |
-| P1-A launch/config interface · P1-B packaging | **1** | to do |
+| P1-A launch/config interface · P1-B packaging | **1** | ✅ done |
 | M4 reconciliation + §6 edge-case coverage | **2** | |
 | M5 capture modes + policy (safety, throttling, gate) | **2** | |
 | M6 full CLI + tray + per-OS packaging | **2** | headless slice pulled into P1 |
@@ -39,7 +39,16 @@ are simply grouped into phases. Where one milestone spans phases (M6), it is spl
 
 ---
 
-# Phase 1 — the Lance deliverable  (2-node point-to-point; full mesh not required)
+# Phase 1 — the Lance deliverable  (2-node point-to-point; full mesh not required)  ✅ COMPLETE
+
+**Status: complete on Windows** — the end-to-end lazy paste (M0–M3) plus the launch surface
+(P1-A) and self-contained release binary (P1-B) are all done and building. Remaining before
+declaring it battle-tested with Lance: an end-to-end run against an actual Lance session
+(hook launch + kill-by-name; confirm no visible console on Lance's detached launch) and a
+recorded two-machine TEST.md pass. Known Phase-1 limitations, all deferred by decision to
+Phase 2: no bandwidth throttling (clipboard vs. the GPU stream), text/images eager on
+Windows (Finding B), no HTML, no safety-hint filtering (a copied password syncs), no
+reconciliation (moot at 2 nodes).
 
 **Goal:** a working clipboard for a **Lance** streaming session. Lance
 (github.com/samsam07/Lance) orchestrates Apollo (a Sunshine fork) + Moonlight for
@@ -143,25 +152,31 @@ M0/M1 `on_render` bridge for the real cross-mesh lazy paste (text, image, and Wi
 Includes the job-model semantics that are just this system exercised: multiple pastes →
 multiple completing jobs, pin-survives-new-copy, explicit-abort-only (`SPEC.md` §4).
 
-## P1-A — Stable launch/config interface for Lance hooks   ← next
+## P1-A — Stable launch/config interface for Lance hooks  ✅ DONE
 
-The current runner (`--port`/`--peer`, self-described as a "dev harness" in `main.rs`)
-becomes the **product launch surface** a Lance session hook can depend on:
-- **Config surface** — listen port + peer(s), stable and hook-friendly (flags, and/or env
-  for variable substitution); non-zero exit on bad config; a clear "ready" log line.
-- **Headless** — no GUI, no tray; runs as an unsupervised background process.
-- **Clean stop** — a stop signal tears down the mesh (peers see EOF) **and releases
-  clipboard ownership**, so a terminated session-end hook does not leave the OS clipboard
-  holding a dead delayed-render promise. Exact stop mechanism + log destination pinned at
-  implementation.
+**Outcome: DONE.** The runner is now the product launch surface a Lance session hook depends
+on: `--port` (optional, default 9860), `--peer IP[:PORT]` (repeatable; a bare IP inherits
+`--port`, resolved order-independently; inbound from unlisted peers also accepted),
+`--log-file PATH` (a detached, unsupervised process's stdout may go nowhere; falls back to
+stdout on open failure), headless, and a clean Ctrl-C shutdown for the manual/dev case.
+Lance launches it **detached** and stops it at session end with `taskkill /F /IM
+clipline.exe`; on process exit — graceful *or* forceful — the OS destroys our message window
+and releases clipboard ownership, so no dead delayed-render promise is left behind (no
+explicit release path needed). TEST.md gained the Launch & lifecycle checks (L1/L2).
 
 Not the product CLI (`clipline up`, status, toggles, tray) — that is M6 (Phase 2). P1-A is
 the minimum stable surface the hook needs.
 
-## P1-B — Packaged launchable Windows binary
+## P1-B — Packaged launchable Windows binary  ✅ DONE
 
-A real, launchable `clipline.exe` the hook invokes — not `cargo run`. Native Windows
-packaging; the broader per-OS packaging is M6 (Phase 2).
+**Outcome: DONE.** `cargo build --release` produces a **self-contained** `clipline.exe`
+(~4 MB): the MSVC C runtime is linked **statically** (`.cargo/config.toml`,
+`+crt-static`), so it launches on a target machine with **no VC++ redistributable
+installed** — verified with `dumpbin /dependents` (zero `vcruntime`/`msvcp`/`ucrtbase`
+imports; only always-present OS DLLs, incl. one `api-ms-*` API set). Release symbols
+stripped (`strip = true`). Console subsystem kept (Ctrl-C for dev; Lance launches detached,
+so no visible window). Version metadata / icon and cross-OS packaging are deferred to M6
+(Phase 2).
 
 ---
 

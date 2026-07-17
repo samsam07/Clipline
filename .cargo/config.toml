@@ -1,0 +1,11 @@
+# Statically link the MSVC C runtime so the release binary is self-contained: it launches on
+# a target machine that does NOT have the VC++ redistributable installed (otherwise the exe
+# fails at startup with a missing VCRUNTIME140.dll). This is the "single static binary per
+# platform" goal in CONVENTIONS.md, and Phase-1 P1-B in particular — Lance drops `clipline.exe`
+# on a box and launches it via a session hook, so it cannot assume a redist is present.
+#
+# Safe here: Clipline's platform calls go through system DLLs (kernel32/user32/ole32, always
+# present on Windows), not the VC runtime, and we link no companion DLLs that would need a
+# shared CRT. Trade-off is a larger exe, which is the intended cost of a self-contained binary.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
