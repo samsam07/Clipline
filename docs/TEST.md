@@ -42,9 +42,10 @@ Only one side needs `--peer`: inbound from unlisted peers is accepted (`SPEC.md`
 Contents are **never** logged (`CONVENTIONS.md`) — sizes, seqs, origins only. Every check
 below is verified by observing behaviour, not by reading data out of logs.
 
-> The runner (`clipline up`-style `--port`/`--peer`) is a **dev harness**, not the product
-> CLI. `clipline up` + status + tray + packaging are **M6**; update this setup section when
-> they land.
+> This is the **Phase-1 launch surface** (P1-A) — the stable, headless interface Lance
+> launches per machine (`--port`, `--peer`, `--log-file`), not yet the product CLI. `clipline
+> up` + status + tray + cross-OS packaging are **M6 (Phase 2)**; update this section when they
+> land.
 
 ---
 
@@ -122,6 +123,30 @@ After check 4, look at A: no staging copy anywhere, no temp-dir growth.
 
 ---
 
+## Launch & lifecycle (P1-A)
+
+Phase 1 runs `clipline` as a **detached, unsupervised** process — launched by a Lance session
+hook and stopped at session end by a kill-by-name. These checks exercise that lifecycle.
+
+### L1. Detached launch with `--log-file`
+Launch `clipline --port 9860 --peer <peer>:9860 --log-file clip.log` **detached** (no console —
+`start /b`, a hook, or `Start-Process -WindowStyle Hidden`).
+* **Expect:** `clip.log` is created and gets `clipline up …`, then `peer connected` once the
+  peer is reachable. Nothing on the console; contents never appear — metadata only.
+* **Proves:** an unsupervised process's diagnostics survive when stdout goes nowhere. (A
+  missing parent dir for the path falls back to stdout with a one-line stderr warning, not a
+  crash.)
+
+### L2. Stop by kill-by-name leaves the clipboard clean
+While running, stop it the way Lance does: `taskkill /F /IM clipline.exe`.
+* **Expect:** the process exits at once; the peer logs the drop (EOF / liveness). On this box a
+  subsequent **local** copy→paste still works — the clipboard is not wedged by a dead promise
+  (the OS releases ownership on process death). Ctrl-C is the graceful equivalent for a
+  console-attached run.
+* **Proves:** forceful stop is safe — no staging, no persistent state, no hung clipboard.
+
+---
+
 ## Not yet covered (add checks here as these land)
 
 - **Reconciliation on peer drop** — M4.
@@ -154,5 +179,7 @@ After check 4, look at A: no staging copy anywhere, no temp-dir growth.
 | M3 | 7 two pastes | | |
 | M3 | 8 graceful failure | | |
 | M3 | 9 by-reference | | |
+| P1-A | L1 launch + --log-file | | |
+| P1-A | L2 kill-by-name clean | | |
 
 Date / boxes / build:
