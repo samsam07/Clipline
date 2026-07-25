@@ -1,0 +1,2 @@
+- On file copy: also copy file metadata
+- add a `--restrict-peers` flag that limits connection to only peers explicitly referenced by `--peers`
