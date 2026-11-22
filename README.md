@@ -61,8 +61,8 @@ Planned for v1 (see [`docs/PLAN.md`](docs/PLAN.md) for status):
 | Platform | Status |
 |---|---|
 | Windows | **Working** (Phase 1) |
-| Linux — KDE Plasma / Wayland | Planned (Phase 2) |
-| Linux — X11 | Planned (Phase 2) |
+| Linux — Wayland (KDE Plasma; wlroots) | **Working**: text + images both ways, files *from* Linux. Files *into* Linux in progress (M-Linux) |
+| Linux — X11 | Planned (M-Linux) |
 | macOS | Not planned for v1 |
 
 Wayland clipboard access uses the `ext-data-control` / `wlr-data-control` protocol

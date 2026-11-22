@@ -147,6 +147,48 @@ While running, stop it the way Lance does: `taskkill /F /IM clipline.exe`.
 
 ---
 
+## Linux — Wayland (M-Linux ML.1)
+
+KDE Plasma Wayland (or any compositor with `ext-`/`wlr-data-control`). Same flags as Windows;
+the binary is `target/release/clipline`. Expect `wayland clipboard adapter up
+protocol="ext-data-control-v1"` at startup (`zwlr-…` on wlroots). On a compositor without
+data-control (GNOME) startup fails with a clear error until X11 lands (ML.3).
+
+**One session is enough for these checks**, unlike Windows: every `clipline` promise carries
+an owner marker, so two nodes in one Wayland session do not feed each other. Both nodes do
+capture each real copy, so expect two `broadcasting offer` lines per copy — the later `seq`
+wins. Two machines remain the real test, and Windows ↔ Linux is the cross-OS one.
+
+### W0. Live adapter tests
+`cargo test -p clipline -- --ignored` inside the session. **Overwrites your clipboard.**
+* **Expect:** 4 pass — lazy serve with readers coalesced onto one fetch, failed render =
+  empty paste, adapter deadline releases the reader, a foreign copy is captured and served
+  by range.
+
+### W1. Text both ways
+Copy in Kate on one node → paste in Kate on the other; then the reverse. Also Windows ↔ Linux.
+* **Expect:** the text appears. Klipper's force-read (`render requested` right after
+  `promise on head`, before any paste) is expected — Finding B holds on Linux.
+
+### W2. Image both ways
+Copy an image (Spectacle screenshot → Copy; or Gwenview) → paste into an image editor on
+the other node, and Windows ↔ Linux (Paint / Win+Shift+S).
+* **Expect:** it appears; PNG on the wire, no conversion on Linux.
+
+### W3. Files from Linux → Windows
+Copy a file and a folder in Dolphin → paste in Explorer on Windows.
+* **Expect:** as M3 checks 4/4b — by-reference, streamed, empty dirs kept.
+  **Linux ← files** (pasting files *into* Linux) is ML.2 (FUSE): today the head is left
+  unchanged and B logs `set_promise failed … inbound files need the FUSE mount`.
+
+### W4. Graceful failure, Qt budget
+Copy on A, kill A **before** pasting (and before Klipper caches it — copy a large image),
+paste on B.
+* **Expect:** an empty paste, no hang. Pending (ML.4): the M0b Kate boundary — a source
+  answering at 900 ms pastes, at 1100 ms does not (Finding E).
+
+---
+
 ## Not yet covered (add checks here as these land)
 
 - **Reconciliation on peer drop** — M4.
@@ -181,5 +223,10 @@ While running, stop it the way Lance does: `taskkill /F /IM clipline.exe`.
 | M3 | 9 by-reference | | |
 | P1-A | L1 launch + --log-file | | |
 | P1-A | L2 kill-by-name clean | | |
+| M-Linux | W0 live adapter tests | ✅ | 2026-11-22, Fedora 44 / KWin, 4/4 |
+| M-Linux | W1 text both ways | | one-session loopback ✅; two-machine pending |
+| M-Linux | W2 image both ways | | one-session loopback ✅ (byte-identical PNG); two-machine pending |
+| M-Linux | W3 files Linux → Windows | | |
+| M-Linux | W4 graceful failure | | |
 
 Date / boxes / build:

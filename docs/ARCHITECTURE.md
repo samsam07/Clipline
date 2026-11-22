@@ -112,9 +112,11 @@ event (write to the provided fd); X11 via `SelectionRequest`. **All three block 
 OS synchronously while we do async network I/O** — bridging that sync↔async gap with
 a timeout is make-or-break and is proven in M0 before any networking exists.
 
-`arboard` is **insufficient** (text+image only; no file/arbitrary-MIME model). Use
-`wl-clipboard-rs` for Wayland (MIME-typed, fd-serve = lazy-capable) and the `windows`
-crate for Win32 clipboard + delayed render. X11 via a raw selection-owner impl.
+`arboard` is **insufficient** (text+image only; no file/arbitrary-MIME model). Wayland is
+bound **raw** (`wayland-client` + `ext-data-control`, `zwlr-data-control` fallback) — M-Linux
+found `wl-clipboard-rs` cannot serve lazily per request (see CONVENTIONS.md). The `windows`
+crate serves Win32 clipboard + delayed render. X11 via a raw selection-owner impl over
+`x11rb` (M-Linux ML.3).
 
 ## Wire shape
 

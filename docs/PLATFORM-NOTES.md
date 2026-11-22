@@ -241,6 +241,41 @@ the pasting app via the `IDataObject` (M1 decision; mstsc-style).
 
 ---
 
+## Linux — M-Linux ML.1 (the real Wayland adapter)
+
+**Environment:** Fedora 44, KDE Plasma Wayland (KWin advertises `ext_data_control_manager_v1`),
+Klipper running. Two `clipline` nodes over loopback TLS in one session, plus the adapter's
+`#[ignore]`d live tests (`cargo test -p clipline -- --ignored`).
+
+- **`wl-clipboard-rs` cannot serve lazily** (closes the PLAN "verify" item). Its 0.9.5 copy
+  API takes `Source::Bytes`/`StdIn` only, and its `send` handler does a blocking `io::copy`
+  — both contradict Finding D. Bound raw `wayland-client` instead (CONVENTIONS.md).
+- **Finding B holds on Linux.** A fresh promise draws **two concurrent** text reads within
+  milliseconds, before any paste (Klipper + the Plasma clipboard applet). Wayland does not
+  cache a served selection the way Windows caches a rendered format, so each would be a
+  network fetch. The adapter keeps a per-head byte cache **and** parks concurrent readers
+  on the in-flight fetch: measured **one** fetch for two `wl-paste`s plus Klipper.
+- **Klipper refills an emptied clipboard.** When the selection owner exits (a `clipline`
+  node killed), Klipper re-publishes its last history item as its own selection. Harmless
+  across machines; in a one-session two-node test the survivor captures it as a new copy.
+- **Our own promise echoes back.** The compositor sends every `selection` change to every
+  data-control device, ours included, so a node would capture its own promise. Every
+  `clipline` source therefore advertises `application/x-clipline-owner`; any selection
+  carrying it is ignored. Side effect, useful for testing: two nodes in **one** Wayland
+  session do *not* feed each other (unlike Windows — TEST.md "Why two machines"); each still
+  captures the same real copy once, and the later `seq` wins.
+- **Loop guard.** A manager that re-publishes a promise *without* the marker would launder
+  it into a "local copy" and bounce it between nodes forever. A non-file capture byte-equal
+  to what we served for the current head is ignored.
+- **Graceful failure confirmed on the compositor:** a failed render and an unanswered render
+  (adapter deadline) both close the fd empty — `wl-paste` returns nothing, promptly, no hang.
+- **Pre-existing clipboard is not offered.** The device reports the current selection on
+  creation; it is skipped, matching Windows (whose listener never reports it).
+- Release binary links only glibc/libm/libgcc (pure-Rust Wayland backend) — still one
+  self-contained file.
+
+---
+
 ## Sources (cross-validation)
 
 - Microsoft — *Shell Clipboard Formats* (`CFSTR_FILEDESCRIPTOR`/`CFSTR_FILECONTENTS`,

@@ -20,7 +20,7 @@ are simply grouped into phases. Where one milestone spans phases (M6), it is spl
 | M5 capture modes + policy (safety, throttling, gate) | **2** | |
 | M6 full CLI + tray + per-OS packaging | **2** | headless slice pulled into P1 |
 | M7 HTML format | **2** | |
-| M-Linux Linux adapter (Wayland/X11 + FUSE) | **2** | |
+| M-Linux Linux adapter (Wayland/X11 + FUSE) | **2** | ML.1 (Wayland) ✅ · ML.2–4 open |
 | file/folder fidelity + deeper pipelining | **2** | |
 | security/trust (pairing, PSK, admission, cert validation) | **3** | |
 | mDNS/hybrid discovery | **3** | |
@@ -214,6 +214,24 @@ for Lance; this is the remaining product CLI, tray, and cross-OS packaging.)*
 
 ## M-Linux — Linux adapter
 
+**Status: ML.1 done** (Wayland adapter: text + image both ways, outbound files
+by-reference; `platform/wayland.rs`). Slices:
+- **ML.1 — Wayland adapter** ✅. Raw `wayland-client` over `ext-data-control`, falling back
+  to `zwlr-data-control`; non-blocking fd-serve (Finding D); a per-head byte cache that
+  coalesces concurrent readers (incl. in-flight) into one fetch; owner-marker MIME + content
+  loop guard against clipboard managers re-publishing a promise. Verified live on KWin
+  (PLATFORM-NOTES "M-Linux ML.1"). Inbound file offers are refused (head unchanged) until ML.2.
+- **ML.2 — FUSE inbound files.** Mount lifecycle `[CRYSTALLIZE: M-Linux]` **open** — the
+  human is weighing one mount (head-only view) vs. a mount per offer.
+- **ML.3 — X11 selection owner** (`x11rb`), the fallback when there is no data-control
+  compositor (e.g. GNOME/Mutter).
+- **ML.4 — TEST.md Linux pass + the M0b latency re-run** below (needs a human at a focused
+  GUI).
+
+Pinned with the human at M-Linux: Wayland binding (raw ext + wlr, not `wl-clipboard-rs`);
+X11 crate (`x11rb`); Linux render deadline (**30 s**, same as Windows — Qt abandons at
+~1 s on its own, data-control/GTK readers wait).
+
 Deferred with the rest of the Linux work after M0 proved the trait is expressible against
 both OS models (see Post-M0 sequencing). Owns:
 - the Wayland **`ext-data-control`** source adapter (KWin advertises
@@ -223,7 +241,8 @@ both OS models (see Post-M0 sequencing). Owns:
   so file bytes stream as ordinary file I/O, not inside the ~1 s clipboard read budget;
 - verifying whether **`wl-clipboard-rs`** (named in CONVENTIONS) can serve *lazily*
   per-request, or whether the raw `wayland-client` + `ext-data-control` approach the M0b
-  spike used is required (a CONVENTIONS decision);
+  spike used is required (a CONVENTIONS decision) — **resolved in ML.1: it cannot; raw
+  `wayland-client` is used** (PLATFORM-NOTES "M-Linux ML.1");
 - **re-running the M0b latency tests**, including the pending empirical confirm of the ~1 s
   Qt boundary (Finding E, source-pinned but not yet bracketed on the metal): in Kate,
   `--delay-ms 900` should paste and `--delay-ms 1100` should not.
@@ -310,6 +329,7 @@ Signed installers, auto-update, per-OS packaging for non-technical users.
   spike findings live in `PLATFORM-NOTES.md` (incl. the `CF_HDROP` vs.
   `CFSTR_FILEDESCRIPTOR` question that resolved locked decision #8).
 - Staging-dir layout + cleanup → **dropped** (streaming, no staging — M1 decision). Linux
-  FUSE mount lifecycle → M-Linux.
+  FUSE mount lifecycle → M-Linux ML.2 (open).
 - `Strict` safety policy specifics → M5 (policy).
-- X11 crate choice → M-Linux (platform).
+- X11 crate choice → M-Linux — **pinned: `x11rb`**.
+- Linux render deadline → M-Linux — **pinned: 30 s**.

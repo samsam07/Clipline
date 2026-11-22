@@ -14,10 +14,17 @@ This file records only what's worth stating explicitly or what differs for Clipl
 ## Crates (leaning; final set pinned per milestone)
 - `tokio` — async runtime for mesh I/O and transfer jobs.
 - `rustls` — TLS over TCP. (No QUIC.)
-- `wl-clipboard-rs` — Wayland clipboard via `ext-data-control` / `wlr-data-control`
-  (MIME-typed, fd-serve = lazy-capable). **Not `arboard`** (text+image only).
+- Wayland: **raw `wayland-client`** + `wayland-protocols` (`staging`: `ext-data-control`)
+  + `wayland-protocols-wlr` (`zwlr-data-control` fallback for wlroots) — **pinned in
+  M-Linux**. *Not* `wl-clipboard-rs`: its copy API takes the bytes up front
+  (`Source::Bytes`/`StdIn`) and blocks in its `send` handler, so it cannot serve lazily per
+  request (PLATFORM-NOTES Finding D; verified against its 0.9.5 source). **Not `arboard`**
+  (text+image only). `rustix` for the dispatch loop's poll/pipe/fcntl.
 - `windows` — Win32 clipboard + delayed render (`WM_RENDERFORMAT`).
-- X11 selection-owner: raw impl (crate choice `[CRYSTALLIZE: platform milestone]`).
+- X11 selection-owner: raw impl over **`x11rb`** (pure-Rust protocol, no libxcb link —
+  keeps the single static binary) — **pinned in M-Linux**; implemented in ML.3.
+- FUSE (Linux inbound files): **`fuser`** with default features (pure-Rust mount via
+  `fusermount3`, no libfuse link) — ML.2.
 - serde + `postcard` for control messages — **pinned** in M2 (`wire.rs`: length-prefixed
   frames + `postcard`). Bulk-plane framing is not covered by that pin.
 - `blake3` (`ContentHash`), `rand` (`OriginId`), `rcgen`/`tokio-rustls` (ephemeral TLS

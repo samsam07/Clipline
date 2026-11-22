@@ -22,7 +22,8 @@
 //! # What it wires
 //!
 //! Everything, in the order the data flows:
-//! * the **adapter** (Win32) — injected as `dyn ClipboardAdapter`; core never names it;
+//! * the **adapter** (Win32, or Wayland on Linux — M-Linux) — injected as
+//!   `dyn ClipboardAdapter`; core never names it;
 //! * the **pin store** + `OriginServer` — the origin side: what we can still serve after
 //!   the clipboard moves on (locked decision #6);
 //! * the **mesh** — control plane (offers) + bulk plane (fetches) on one listening port;
@@ -31,16 +32,16 @@
 
 mod platform;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use std::net::{IpAddr, SocketAddr};
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use std::path::{Path, PathBuf};
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use std::sync::Arc;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use std::time::Duration;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use clipline_core::{
     head, run_job_end_loop, run_render_loop, CaptureId, ClipboardAdapter, FetchSource, Mesh,
     MeshConfig, OriginId, OriginServer, PinStore, ReleaseCapture, TransferEngine, DEFAULT_PORT,
@@ -48,10 +49,10 @@ use clipline_core::{
 
 /// Lets the pin store release captures on the injected adapter. The pin store only needs
 /// that one method, so it asks for only that one method.
-#[cfg(windows)]
-struct AdapterRelease(Arc<platform::WinClipboardAdapter>);
+#[cfg(any(windows, target_os = "linux"))]
+struct AdapterRelease(Arc<dyn ClipboardAdapter>);
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 impl ReleaseCapture for AdapterRelease {
     fn release_capture(&self, capture: CaptureId) {
         ClipboardAdapter::release_capture(&*self.0, capture);
@@ -59,15 +60,18 @@ impl ReleaseCapture for AdapterRelease {
 }
 
 /// How long the adapter blocks an OS render call before giving up and failing the paste
-/// gracefully (D2; M0 Finding A tolerates ~30 s on Windows).
+/// gracefully (D2; M0 Finding A tolerates ~30 s on Windows). Linux uses the same value
+/// (`[CRYSTALLIZE: M-Linux]`, pinned): there it is how long a Wayland `send` fd waits for
+/// core's reply before closing empty — Qt readers abandon at ~1 s on their own (Finding E),
+/// data-control and GTK readers wait.
 ///
 /// Since M3.5 this bounds **one read** of a file stream, not a whole transfer — so it can
 /// be generous without making a large file undeliverable.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const RENDER_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn main() {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     {
         // Logging is installed *inside* `run`, after args are parsed — `--log-file` decides
         // where it goes. A failure before that (a bad argument) has no subscriber yet, so
@@ -78,7 +82,7 @@ fn main() {
         }
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         tracing_subscriber::fmt()
             .with_env_filter(
@@ -86,15 +90,15 @@ fn main() {
                     .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
             )
             .init();
-        // The Linux adapter is M-Linux (Phase 2; PLAN.md "Post-M0 sequencing"). Core is
-        // portable; there is simply nothing to inject here yet.
-        tracing::error!("no clipboard adapter for this platform yet (Linux is M-Linux)");
+        // Windows and Linux only (CLAUDE.md targets). Core is portable; there is simply
+        // nothing to inject here.
+        tracing::error!("no clipboard adapter for this platform");
         std::process::exit(1);
     }
 }
 
 /// `clipline [--port N] [--peer IP[:PORT]]... [--log-file PATH]`
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 struct Args {
     listen_port: u16,
     peers: Vec<SocketAddr>,
@@ -103,7 +107,7 @@ struct Args {
     log_file: Option<PathBuf>,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn parse_args() -> Result<Args, String> {
     // Both are optional: no `--port` → the default (9860), no `--peer` → accept-inbound-only
     // (SPEC.md §10). Lance's 2-node case lists the other side with a single `--peer`.
@@ -153,7 +157,7 @@ fn parse_args() -> Result<Args, String> {
 /// Parse a `--peer` value: `IP:PORT` (explicit) or a bare `IP` (port left `None`, resolved to
 /// our `--port` by the caller). IP literals only — no DNS (v1 is IP-only, like `SocketAddr`);
 /// `[v6]:port` and bare `::1` both parse.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn parse_peer(v: &str) -> Result<(IpAddr, Option<u16>), String> {
     if let Ok(sa) = v.parse::<SocketAddr>() {
         return Ok((sa.ip(), Some(sa.port())));
@@ -168,7 +172,7 @@ fn parse_peer(v: &str) -> Result<(IpAddr, Option<u16>), String> {
 /// stdout — a detached, unsupervised process may have nowhere for stdout to go. Falls back
 /// to stdout if the file cannot be opened. Contents are never logged (CONVENTIONS.md); this
 /// only routes the metadata logs core already emits.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn init_logging(log_file: Option<&Path>) {
     use tracing_subscriber::EnvFilter;
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
@@ -200,7 +204,7 @@ fn init_logging(log_file: Option<&Path>) {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args()?;
     init_logging(args.log_file.as_deref());
@@ -212,7 +216,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     rt.block_on(async move {
         // The adapter must be built inside the runtime: it spawns the task serving
         // `local_reads`, which needs a reactor.
-        let adapter = Arc::new(platform::WinClipboardAdapter::new(RENDER_TIMEOUT)?);
+        let adapter = platform::new_adapter(RENDER_TIMEOUT)?;
         let origin_id = OriginId::new_random();
 
         // --- origin side: what peers fetch from us -------------------------------------
@@ -243,7 +247,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // --- the head slot, and the destination side -----------------------------------
         let _head = head::spawn(
             origin_id,
-            adapter.clone() as Arc<dyn ClipboardAdapter>,
+            adapter.clone(),
             mesh.handle(),
             offers,
             head_tx,

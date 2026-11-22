@@ -50,5 +50,18 @@ windows = { version = "0.61", features = [
 windows-core = "0.61"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+# Linux Wayland clipboard adapter (M-Linux ML.1). **Raw `wayland-client`**, not
+# `wl-clipboard-rs`: that crate's copy API takes the bytes up front (`Source::Bytes`/`StdIn`)
+# and blocks in its `send` handler, so it cannot serve lazily per request (M-Linux finding;
+# PLATFORM-NOTES Finding D). Both data-control protocols are bound: `ext-data-control`
+# (KWin — `wayland-protocols` `staging`) and `zwlr-data-control` (wlroots compositors).
+# `rustix` gives the poll/pipe/fcntl the dispatch loop and fd-serve need. All pure Rust over
+# the system `libwayland-client`-free backend (`wayland-backend` rust impl by default).
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+rustix = { version = "1", features = ["pipe", "event", "fs"] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
