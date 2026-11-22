@@ -102,6 +102,13 @@ The release binary at `target\release\clipline.exe` links the MSVC C runtime **s
 (see [`.cargo/config.toml`](.cargo/config.toml)), so it runs on any Windows machine with **no
 VC++ redistributable installed** — copy the single `.exe` across and launch it.
 
+On **Linux**, `make install` builds the release binary and copies it to
+`~/.local/bin/clipline` (override with `make install BINDIR=…`); rerun it after each update.
+The same `cargo build --release` needs only the Rust toolchain — no
+`-devel` packages: Wayland is spoken in pure Rust, so `target/release/clipline` links
+nothing beyond glibc. Run it inside the graphical session (it needs `$WAYLAND_DISPLAY`) on a
+compositor with `ext-` or `wlr-data-control` (KDE Plasma, wlroots compositors).
+
 ### Running
 
 Clipline is a **long-lived** process — it must keep running to own the clipboard and serve

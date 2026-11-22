@@ -20,6 +20,19 @@ copy broadcasts a tiny *offer*; bytes move only when a paste actually asks for t
 Language: **Rust**. Targets: **Windows and Linux** (Fedora/KDE Plasma, Wayland-first;
 most distros ideally). Transport: **TLS-over-TCP** (not QUIC).
 
+## Dev setup: build, install, run
+
+- **Topology:** developed on **Fedora (KDE Plasma, Wayland)**, used against a **Windows**
+  peer (the Lance streaming pair); any mix of Windows and Linux peers is supported.
+- `make test` — all tests (`--all-features`: some core tests need `mock`). `make test-live`
+  — the Wayland adapter's real-compositor tests (**overwrite the clipboard**; TEST.md W0).
+  The Windows adapter can be type-checked from Linux with
+  `cargo check --target x86_64-pc-windows-gnu --all-targets`.
+- **`make install`** — release build, then **copies** it to `~/.local/bin/clipline`, the
+  `clipline` on the owner's PATH (`BINDIR=` to override). It is a copy, not a link: after a
+  change the owner should try for real, run `make install` (or tell the owner to), or the
+  old build is what runs — and a running `clipline` must be restarted to pick it up.
+
 ## Locked decisions — DO NOT relitigate
 
 These were settled deliberately during design. Treat them as fixed. If you believe
