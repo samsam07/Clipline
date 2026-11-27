@@ -20,7 +20,7 @@ are simply grouped into phases. Where one milestone spans phases (M6), it is spl
 | M5 capture modes + policy (safety, throttling, gate) | **2** | |
 | M6 full CLI + tray + per-OS packaging | **2** | headless slice pulled into P1 |
 | M7 HTML format | **2** | |
-| M-Linux Linux adapter (Wayland/X11 + FUSE) | **2** | ML.1 (Wayland) ✅ · ML.2–4 open |
+| M-Linux Linux adapter (Wayland/X11 + FUSE) | **2** | ML.1 (Wayland) ✅ · ML.2 (FUSE) ✅ · ML.3–4 open |
 | file/folder fidelity + deeper pipelining | **2** | |
 | security/trust (pairing, PSK, admission, cert validation) | **3** | |
 | mDNS/hybrid discovery | **3** | |
@@ -214,74 +214,70 @@ for Lance; this is the remaining product CLI, tray, and cross-OS packaging.)*
 
 ## M-Linux — Linux adapter
 
-**Status: ML.1 done** (Wayland adapter: text + image both ways, outbound files
-by-reference; `platform/wayland.rs`). Slices:
+**Status: ML.1 + ML.2 done** (Wayland adapter: text + image both ways, files both ways —
+outbound by-reference, inbound through the FUSE mount; `platform/wayland.rs`,
+`platform/fuse.rs`). Slices:
 - **ML.1 — Wayland adapter** ✅. Raw `wayland-client` over `ext-data-control`, falling back
   to `zwlr-data-control`; non-blocking fd-serve (Finding D); a per-head byte cache that
   coalesces concurrent readers (incl. in-flight) into one fetch; owner-marker MIME + content
   loop guard against clipboard managers re-publishing a promise. Verified live on KWin
-  (PLATFORM-NOTES "M-Linux ML.1"). Inbound file offers are refused (head unchanged) until ML.2.
-- **ML.2 — FUSE inbound files.** Mount lifecycle `[CRYSTALLIZE: M-Linux]` **open** — the
-  human is weighing one mount (head-only view) vs. a mount per offer. **Paused 2026-11-22;
-  resume at "ML.2 — resume here" below.**
+  (PLATFORM-NOTES "M-Linux ML.1").
+- **ML.2 — FUSE inbound files** ✅ (2026-11-26). One mount per process, one job per pasted
+  subtree with a 300 s grace — pinned below ("ML.2 — what was pinned"). Verified on a real
+  kernel mount and Linux → Linux between two isolated nodes (PLATFORM-NOTES "M-Linux ML.2").
+  The Windows → Linux and Dolphin/Klipper checks are TEST.md W3/W5 (human, ML.4).
 - **ML.3 — X11 selection owner** (`x11rb`), the fallback when there is no data-control
   compositor (e.g. GNOME/Mutter).
 - **ML.4 — TEST.md Linux pass + the M0b latency re-run** below (needs a human at a focused
   GUI).
 
-### ML.2 — resume here (paused 2026-11-22, awaiting the mount decision)
+### ML.2 — what was pinned (2026-11-26)
 
-**What ML.2 must do.** Make a remote *file* offer pasteable on Linux (locked decision #8:
-`text/uri-list` pointing at a FUSE mount that streams on read; no staging). Today
-`WaylandClipboardAdapter::set_promise` refuses a files-only offer ("inbound files need the
-FUSE mount") and leaves the head unchanged; a mixed text+files offer serves only its text.
+**Why FUSE at all** (re-asked and kept, 2026-11-26). A Linux file copy is a `text/uri-list`
+of paths that the pasting app opens itself; only a filesystem can back a path with bytes
+fetched at read time. Alternatives weighed and rejected: download-then-serve (no paste
+signal, Klipper reads at copy time, Qt's ~1 s budget — and it is staging, decision #8);
+FIFOs (no size/seek; copied as special files); fanotify placeholders (root, and on-disk
+bytes); the portal file-transfer protocol (exports existing files only, FUSE underneath).
+A local WebDAV server + `webdav://` URIs would work in file managers only (KIO/GVfs) — a
+possible later *addition* for their progress UI, never a replacement.
 
-**The open decision — FUSE mount lifecycle `[CRYSTALLIZE: M-Linux]`.** Both options give the
-same visible paths (`…/clipline/<seq>/<rel_path>`) and the same head-only view; they differ
-in machinery.
+**Mount lifecycle `[CRYSTALLIZE: M-Linux]` — option A.** One mount per process at
+`$XDG_RUNTIME_DIR/clipline/files`; each remote file offer is a subtree
+`<mount>/<seq>/<rel_path>`; the uri-list we serve always names the current head's subtree
+(head-only for *new* pastes). A `files.lock` held for the process lifetime marks the live
+owner: a mount whose lock is free at startup is stale and is lazily unmounted
+(`fusermount3 -u -z`). A second node in the same session takes `files-<pid>`. fuser's
+`AutoUnmount` is **not** used — it needs `allow_other`, which a stock `/etc/fuse.conf`
+refuses. Ctrl-C and SIGTERM unmount; SIGKILL leaves a stale mount until the next start.
 
-- **A. One mount per process, head-only view** *(Claude's recommendation)*. Mounted once at
-  startup at `$XDG_RUNTIME_DIR/clipline/files`; only the current remote head's tree is
-  listed; files already open keep streaming until closed. Auto-unmounted on exit, including
-  SIGKILL (`fusermount3` auto-unmount); a stale mount is cleared at startup.
-- **B. One mount per offer** *(the human's initial preference)*. Isolation: each offer is its
-  own filesystem with no shared inode table, and teardown is atomic. Costs, relative to A:
-  1. **`set_promise` gets slow.** Each mount execs the setuid `fusermount3` and waits on the
-     kernel handshake (~10–50 ms), and must be live *before* the uri-list is served —
-     Klipper reads a fresh selection ~5 ms after it is set. `set_promise` is meant to be a
-     quick marshal and the head manager waits on it. A pays this once, at startup.
-  2. **Unmount fights in-flight pastes.** An offer Dolphin is still copying from cannot be
-     cleanly unmounted (EBUSY): keep it mounted until its last handle closes (N live mounts,
-     each with a FUSE session thread) or lazily detach. Rapid file copies pile up mounts.
-  3. **Desktop noise.** Each mount appears in `/proc/mounts` and fires mount events that KDE
-     (Solid, Dolphin's Places), GNOME's gvfs and indexers may react to per mount.
-  4. **Crash residue.** SIGKILL leaves one stale mount dir per live offer, not one total.
+**Job = one paste of a subtree, not one open file** (decisions #5/#6; replaces the earlier
+"job = one open file handle" note). A file manager copies a folder file by file, and between
+two files nothing is open — a per-file job let the origin unpin, and the head-only view drop
+the subtree, mid-folder. So a subtree's first `open` starts one `JobId` shared by every read
+of every file in it; it ends **`PASTE_GRACE` = 300 s** after the last file closes with no new
+open (pinned with the human — bridges an "overwrite?" dialog; equals the origin's
+`JOB_IDLE_TIMEOUT`, so longer would buy nothing). A subtree that is no longer the head lingers
+under the same rule, so every in-progress paste completes. The Linux stand-in for mstsc's
+paste-scoped `Lock Clipboard Data`, which Linux gives us no signal to scope exactly.
 
-  Under A, per-seq isolation is still had internally: each seq is its own subtree.
+**Implementation as built:** `fuser` 0.19 default features; one session thread, no callback
+blocks (metadata from the manifest; each open file's reads queue to its own tokio task, which
+keeps them in kernel order); `READAHEAD_WINDOW` read-ahead shared with the Windows
+`LazyFileStream` (moved to `platform/mod.rs`); a read straddling two windows is assembled
+(FUSE zero-fills short replies); modes 0644/0755 on a read-only mount so pasted copies are
+not read-only; mtime = when the offer arrived (the manifest has none — TODO.md metadata);
+uri-list synthesized locally, served instantly; loop guard: a selection whose uri-list names
+only our mount is our promise re-published, ignored whole (its text too).
 
-Either way, old Klipper history entries that point at a previous seq fail with ENOENT — which
-matches core: the origin unpins old seqs (decision #6), so a read would fail there anyway.
-
-**Implementation notes already worked out** (implementation detail, not open questions):
-- Crate: `fuser` 0.19 with **default features** — pure-Rust mount via `fusermount3`, no
-  libfuse link (single static binary; `fuse3-devel` is not needed). Pinned in CONVENTIONS.md.
-- The uri-list is **synthesized locally** from `Offer.files` → FUSE paths; it is never
-  fetched (the origin holds no `text/uri-list` bytes — Windows `local_reads` answers
-  `NoSuchFormat` for it).
-- A FUSE `read` becomes a `FormatReq { format: Mime::uri_list(), file_idx: Some(i), range:
-  Some(..), job }`, with the same window read-ahead as the Windows `LazyFileStream`
-  (`READAHEAD_WINDOW`, 4 MiB; prefetch the next window).
-- **Job = one open file handle** (`open` allocates `JobId::next()`, `release` emits it on
-  `job_ends`) — the Linux form of M3 ruling Q12, so the origin pin lives across all reads.
-- Empty-dir entries (`FileEntry.is_dir`) become directories; sizes come from the manifest
-  (`getattr` never touches the origin).
-- Loop guard: a captured `text/uri-list` whose paths are under our own mount is our promise
-  re-published — ignore it (never offer FUSE paths back to the mesh).
-- Risk to watch: thumbnailers/indexers (Dolphin previews, Baloo) *reading* files in the
-  mount, which would pull bytes without a paste. `stat` is free; reads are not.
-- Verify with TEST.md W3 extended to Windows → Linux and Linux → Linux file pastes.
-
-**Next step:** the human picks A or B; then restate, implement, review (per-slice ritual).
+**Open follow-ups:**
+- **Windows has the same mid-folder gap** — Explorer pulls one `IStream` per file, one job
+  each. Fix as its own slice after ML.2 (agreed 2026-11-26): scope the job to the shell's
+  async operation (`StartOperation` → `EndOperation`), mstsc's lock exactly.
+- **W3 (Linux → Windows files) failed for the human on 2026-11-23** and is undiagnosed —
+  needs both nodes' debug logs (TEST.md W3). ML.2 does not touch that direction.
+- Watch (W5): Dolphin/Klipper previews *reading* files in the mount (pulls bytes without a
+  paste), and whether the mount shows in Dolphin's Places.
 
 Pinned with the human at M-Linux: Wayland binding (raw ext + wlr, not `wl-clipboard-rs`);
 X11 crate (`x11rb`); Linux render deadline (**30 s**, same as Windows — Qt abandons at
@@ -384,7 +380,8 @@ Signed installers, auto-update, per-OS packaging for non-technical users.
   spike findings live in `PLATFORM-NOTES.md` (incl. the `CF_HDROP` vs.
   `CFSTR_FILEDESCRIPTOR` question that resolved locked decision #8).
 - Staging-dir layout + cleanup → **dropped** (streaming, no staging — M1 decision). Linux
-  FUSE mount lifecycle → M-Linux ML.2 (open).
+  FUSE mount lifecycle → M-Linux ML.2 — **pinned: one mount per process, head-only view,
+  lock-file staleness; one job per pasted subtree, 300 s grace**.
 - `Strict` safety policy specifics → M5 (policy).
 - X11 crate choice → M-Linux — **pinned: `x11rb`**.
 - Linux render deadline → M-Linux — **pinned: 30 s**.

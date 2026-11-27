@@ -73,6 +73,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::codec;
 use super::files::{collect_path, read_file_range, slice_of};
+use super::READAHEAD_WINDOW;
 
 /// `WM_CLIPBOARDUPDATE` (declared locally to avoid a feature dependency).
 const WM_CLIPBOARDUPDATE: u32 = 0x031D;
@@ -1257,12 +1258,6 @@ impl IDataObjectAsyncCapability_Impl for FileDataObject_Impl {
 // ---------------------------------------------------------------------------
 // The pulling file stream (M3.5) — the destination end of a lazy file paste.
 // ---------------------------------------------------------------------------
-
-/// One fetch window: how much the stream pulls from the origin per network round trip,
-/// independent of the pasting app's (usually smaller) read size. 4 MiB amortizes the round
-/// trip over ~16 wire chunks instead of paying it per read — the M3 manual gate found paste
-/// throughput was round-trip-bound at the read size (~256 KiB), ~2.7 MB/s.
-const READAHEAD_WINDOW: u64 = 4 * 1024 * 1024;
 
 /// An `IStream` over a remote file, fetched **ahead of the reader** in windows.
 ///

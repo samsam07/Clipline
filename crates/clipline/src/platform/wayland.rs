@@ -22,12 +22,14 @@
 //!   source app never stalls the dispatch loop; one thread so copies stay in order.
 //! * **tokio tasks** — fd writes (render replies) and the `local_reads` server.
 //!
-//! # Scope (ML.1)
+//! # Scope (ML.1 + ML.2)
 //!
 //! Text (UTF-8 on the wire) and images (`image/png`, already the Wayland-native type — no
 //! codec) both ways; **outbound** files (a local `text/uri-list` is captured by-reference:
-//! paths stat'ed, never read — locked decision #8). **Inbound** files need the FUSE mount
-//! (ML.2): until then a files-only remote offer is refused and the head left unchanged.
+//! paths stat'ed, never read — locked decision #8). **Inbound** files (ML.2) are served as a
+//! `text/uri-list` synthesized from the manifest, naming paths in our FUSE mount
+//! ([`super::fuse`]), whose reads stream from the origin. If the mount could not start, a
+//! files-only remote offer is refused and the head left unchanged, as before ML.2.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -69,6 +71,7 @@ use wayland_protocols_wlr::data_control::v1::client::{
 };
 
 use super::files::{collect_path, read_file_range, slice_of};
+use super::fuse::{Bridge, FileMount, FileView};
 
 /// Advertised on every selection **we** own, so our own `selection` event (the compositor
 /// echoes every selection change to every data-control device, ours included) is recognized
@@ -150,6 +153,9 @@ struct Shared {
     next_capture: AtomicU64,
     cache: Mutex<HeadCache>,
     rt: tokio::runtime::Handle,
+    /// The inbound-file mount (ML.2), or `None` if it could not start — then remote file
+    /// offers are refused as before.
+    files: Option<FileView>,
 }
 
 /// The injected Wayland clipboard adapter. See module docs.
@@ -163,6 +169,8 @@ pub struct WaylandClipboardAdapter {
     shared: Arc<Shared>,
     dispatch: Option<JoinHandle<()>>,
     reads_task: Option<tokio::task::JoinHandle<()>>,
+    /// Owns the FUSE session; dropped after the dispatch thread, which unmounts.
+    mount: Option<FileMount>,
 }
 
 impl WaylandClipboardAdapter {
@@ -183,6 +191,20 @@ impl WaylandClipboardAdapter {
         let (wake_rx, wake_tx) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC | PipeFlags::NONBLOCK)
             .map_err(|e| AdapterError::Os(format!("wake pipe: {e}")))?;
 
+        // Inbound files (ML.2). Not fatal: without it text and images still sync both ways.
+        let mount = match FileMount::start(Bridge {
+            render_tx: render_tx.clone(),
+            job_end_tx: job_end_tx.clone(),
+            render_timeout,
+            rt: rt.clone(),
+        }) {
+            Ok(m) => Some(m),
+            Err(e) => {
+                tracing::warn!(error = %e, "inbound file mount unavailable; files from peers will not paste here");
+                None
+            }
+        };
+
         let shared = Arc::new(Shared {
             render_tx,
             watch_tx,
@@ -192,6 +214,7 @@ impl WaylandClipboardAdapter {
             next_capture: AtomicU64::new(1),
             cache: Mutex::new(HeadCache::default()),
             rt: rt.clone(),
+            files: mount.as_ref().map(FileMount::view),
         });
 
         let (ready_tx, ready_rx) = sync_mpsc::channel::<Result<(), AdapterError>>();
@@ -218,6 +241,7 @@ impl WaylandClipboardAdapter {
             shared,
             dispatch: Some(dispatch),
             reads_task,
+            mount,
         })
     }
 
@@ -252,6 +276,8 @@ impl Drop for WaylandClipboardAdapter {
         if let Some(h) = self.dispatch.take() {
             let _ = h.join();
         }
+        // Unmount last: the clipboard no longer advertises paths into the mount.
+        drop(self.mount.take());
     }
 }
 
@@ -596,20 +622,33 @@ impl State {
     /// Own the selection with a source advertising `offer`'s formats, holding no bytes
     /// (SPEC.md §1; locked decision #2). Bytes are produced on `send`.
     fn set_promise(&mut self, offer: Offer, qh: &QueueHandle<State>) -> Result<(), AdapterError> {
-        let mimes: Vec<&str> = offer
+        let mut mimes: Vec<&str> = offer
             .formats
             .iter()
             .flat_map(|f| os_mimes_for(&f.mime))
             .copied()
             .collect();
+        // Files (ML.2): a uri-list into the mount, synthesized on `send`. Never advertised
+        // without the mount — a uri-list we cannot back would promise a paste that cannot
+        // succeed.
+        let files = self
+            .shared
+            .files
+            .as_ref()
+            .filter(|_| !offer.files.is_empty());
+        if files.is_some() {
+            mimes.push(URI_LIST_MIME);
+        }
         if mimes.is_empty() {
-            // Files-only (or nothing servable): advertising a uri-list we cannot back would
-            // promise a paste that cannot succeed. Inbound files arrive with ML.2 (FUSE).
             return Err(AdapterError::Os(if offer.files.is_empty() {
                 "remote offer has no format this adapter serves".into()
             } else {
-                "inbound files need the FUSE mount (M-Linux ML.2)".into()
+                "inbound files need the FUSE mount, which did not start (see the startup log)"
+                    .into()
             }));
+        }
+        if let Some(view) = &self.shared.files {
+            view.set_head(files.map(|_| &offer));
         }
         // A new head: dropping the old cache also drops any readers parked on the old
         // head's fetch — they get EOF (an empty paste of a head that is no longer current).
@@ -629,6 +668,9 @@ impl State {
         let mimes: Vec<&str> = os_mimes_for(&payload.format).to_vec();
         if mimes.is_empty() {
             return Err(AdapterError::Os("eager payload format not servable".into()));
+        }
+        if let Some(view) = &self.shared.files {
+            view.set_head(None);
         }
         {
             let mut cache = self.shared.cache.lock().expect("cache lock");
@@ -748,6 +790,11 @@ impl State {
             .is_some_and(|(s, _)| s.id() == source.id())
         {
             self.owned = None;
+            // The head is a local copy now: new pastes no longer see our file subtree (one
+            // still being pasted lingers — see `fuse`).
+            if let Some(view) = &self.shared.files {
+                view.set_head(None);
+            }
         }
     }
 
@@ -762,6 +809,19 @@ impl State {
         let offer = match what {
             Owned::Promise(o) | Owned::Eager(o) => o,
         };
+        // Files (ML.2): the uri-list is local metadata — answered at once, no fetch, no job.
+        // Clipboard managers force-read it at copy time; that costs nothing.
+        if mime == URI_LIST_MIME {
+            if let Some(list) = self
+                .shared
+                .files
+                .as_ref()
+                .and_then(|v| v.uri_list((offer.origin_id, offer.seq)))
+            {
+                self.shared.rt.spawn_blocking(move || write_fd(fd, &list));
+            }
+            return;
+        }
         let Some(wire) = wire_for_os(&mime, offer) else {
             return; // a type we did not advertise (or the marker)
         };
@@ -1056,8 +1116,21 @@ fn capture_one(shared: &Shared, job: CaptureJob) {
             });
             capture.formats.insert(Mime::png(), bytes);
         } else if mime == URI_LIST_MIME {
+            // ML.2 loop guard: a uri-list naming our own mount is our promise re-published by
+            // a clipboard manager without the owner marker (Klipper does this when a selection
+            // owner goes away) — the whole selection is ours, its text included. Never offer
+            // FUSE paths back to the mesh.
+            let paths = parse_uri_list(&bytes);
+            if let Some(view) = &shared.files {
+                if !paths.is_empty() && paths.iter().all(|p| view.is_ours(p)) {
+                    tracing::debug!(
+                        "selection names our own file mount; ignoring (re-published promise)"
+                    );
+                    return;
+                }
+            }
             // By-reference (locked decision #8): stat the paths, never read them.
-            for path in parse_uri_list(&bytes) {
+            for path in paths {
                 let root = path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -1286,8 +1359,10 @@ mod tests {
         );
     }
 
+    /// The uri-list is not a per-format mapping: `set_promise` adds it only for an offer with
+    /// files *and* a live mount (ML.2), since it must point into that mount.
     #[test]
-    fn files_are_not_advertised_until_the_fuse_mount() {
+    fn uri_list_is_not_a_format_mapping() {
         assert!(os_mimes_for(&Mime::uri_list()).is_empty());
         assert_eq!(os_mimes_for(&Mime::png()), &[PNG_MIME]);
         assert_eq!(os_mimes_for(&Mime::text_utf8()), TEXT_MIMES);

@@ -204,6 +204,23 @@ fn init_logging(log_file: Option<&Path>) {
     }
 }
 
+/// Wait for a graceful stop: Ctrl-C everywhere, and on Linux also `SIGTERM` — what logout
+/// and `systemctl --user stop` send. Graceful matters there: it is what unmounts the inbound
+/// file mount (ML.2); a hard kill leaves it stale until the next start clears it.
+#[cfg(windows)]
+async fn shutdown_signal() -> std::io::Result<()> {
+    tokio::signal::ctrl_c().await
+}
+
+#[cfg(target_os = "linux")]
+async fn shutdown_signal() -> std::io::Result<()> {
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tokio::select! {
+        r = tokio::signal::ctrl_c() => r,
+        _ = term.recv() => Ok(()),
+    }
+}
+
 #[cfg(any(windows, target_os = "linux"))]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args()?;
@@ -264,7 +281,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "clipline up — copy on one node, paste on another; Ctrl-C to stop",
         );
 
-        tokio::signal::ctrl_c().await?;
+        shutdown_signal().await?;
         tracing::info!("shutting down");
         // Dropping the mesh closes every connection; peers observe us leaving.
         drop(mesh);

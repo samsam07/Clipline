@@ -66,7 +66,7 @@ one is wrong, *stop and ask the human* — do not silently re-decide.
    promise is force-materialized at *copy* time by clipboard monitors, which breaks
    laziness. `FILECONTENTS` is served per-file (and, in M3, per-range) through the same
    lazy-render bridge — **no staging dir**. Linux uses `text/uri-list` pointing at a
-   **FUSE mount** that streams on read (no copy either; deferred to M-Linux).
+   **FUSE mount** that streams on read (no copy either; M-Linux ML.2 — one mount per process).
 9. **Preserve the whole format set across the wire**; the destination picks. Never
    pre-flatten formats at the source.
 10. **Discovery v1 = explicit endpoints** (config by IP, Vox-style). mDNS/hybrid is
@@ -101,7 +101,7 @@ Atomic detail is deliberately deferred to the milestone that owns it, marked
 `[CRYSTALLIZE: <milestone>]` in the docs. When you reach that milestone, you (with the
 human) pin the detail *then* — not earlier. Examples currently deferred: exact wire
 field layouts, framing/encoding, error codes, the eager-size threshold value, throttle
-rates, per-OS render mechanics, the Linux FUSE mount lifecycle (M-Linux). Do not fill
+rates, per-OS render mechanics. (The Linux FUSE mount lifecycle was pinned in ML.2.) Do not fill
 these in speculatively ahead of their milestone.
 
 ## Per-slice verification ritual

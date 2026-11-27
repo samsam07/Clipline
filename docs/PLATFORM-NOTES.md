@@ -276,6 +276,31 @@ Klipper running. Two `clipline` nodes over loopback TLS in one session, plus the
 
 ---
 
+## Linux — M-Linux ML.2 (the FUSE inbound-file mount)
+
+**Environment:** Fedora 44, kernel 7.3, KWin. Two `clipline` nodes over loopback, each in its
+**own headless KWin** (`kwin_wayland --virtual --socket …`) — isolated clipboards, so a test
+never touches the desktop session's. Plus the `#[ignore]`d live mount test.
+
+- **`AutoUnmount` is not usable as shipped.** fuser 0.19 documents that it needs
+  `allow_other`/`allow_root`, which needs `user_allow_other` in `/etc/fuse.conf` (root) — absent
+  on stock Fedora. Staleness is detected with a lock file instead (`files.lock`, `flock`ed for
+  the process lifetime; the kernel drops it on any death, SIGKILL included).
+- **A SIGKILLed owner leaves a stale mount**: every access fails `ENOTCONN` ("Transport endpoint
+  is not connected"), and it stays in `/proc/self/mountinfo`. `fusermount3 -u -z` clears it
+  unprivileged; done at the next start when the lock is free.
+- **SIGTERM skipped cleanup** — the binary waited only for Ctrl-C, so logout/`systemctl stop`
+  would have left a stale mount. Now SIGTERM takes the same graceful path.
+- **One job across a folder works on the wire as is.** Core keys the origin pin by
+  `(peer, job_id)` and needs nothing per file, so many files under one `JobId` needed no core
+  change. (`TransferEngine`'s `JobInfo.file_idx` records the first file only — cosmetic, M6.)
+- **Measured:** 43 MB folder pasted with `cp -r` from the mount in 0.18 s over loopback, 4 MiB
+  windows, byte-identical.
+- Release binary still links only glibc/libm/libgcc — fuser's pure-Rust mount via the setuid
+  `fusermount3`, no libfuse.
+
+---
+
 ## Sources (cross-validation)
 
 - Microsoft — *Shell Clipboard Formats* (`CFSTR_FILEDESCRIPTOR`/`CFSTR_FILECONTENTS`,

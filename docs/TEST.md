@@ -147,7 +147,7 @@ While running, stop it the way Lance does: `taskkill /F /IM clipline.exe`.
 
 ---
 
-## Linux — Wayland (M-Linux ML.1)
+## Linux — Wayland (M-Linux ML.1 + ML.2)
 
 KDE Plasma Wayland (or any compositor with `ext-`/`wlr-data-control`). Same flags as Windows;
 the binary is `target/release/clipline`. Expect `wayland clipboard adapter up
@@ -178,8 +178,32 @@ the other node, and Windows ↔ Linux (Paint / Win+Shift+S).
 ### W3. Files from Linux → Windows
 Copy a file and a folder in Dolphin → paste in Explorer on Windows.
 * **Expect:** as M3 checks 4/4b — by-reference, streamed, empty dirs kept.
-  **Linux ← files** (pasting files *into* Linux) is ML.2 (FUSE): today the head is left
-  unchanged and B logs `set_promise failed … inbound files need the FUSE mount`.
+* **2026-11-23: failed for the human, undiagnosed.** Re-run with
+  `RUST_LOG=clipline=debug,clipline_core=debug` and `--log-file` on **both** nodes; note what
+  Explorer did (Paste greyed / dialog then error / nothing) and the Windows build's commit.
+  The Linux log shows whether Windows ever fetched (`serving fetch … file_idx=`).
+
+### W5. Files into Linux (ML.2 — the FUSE mount)
+Startup logs `inbound file mount up dir=$XDG_RUNTIME_DIR/clipline/files`. Copy a file and a
+folder (with an empty subfolder and a large file) on Windows (Explorer) **and** on another
+Linux node (Dolphin) → paste in Dolphin here.
+* **Expect:** the paste completes byte-identical, empty dirs kept; Dolphin shows a normal copy
+  progress dialog (the bytes stream as file reads). Pasted files are not read-only.
+* **Mid-folder head change** (decisions #5/#6): start pasting a large folder, and while it runs
+  copy something else on the origin. The folder paste still completes; the next paste gets the
+  new copy. (B's log: every read of the folder shares one `job=`.)
+* **Klipper** keeps the entry; force-reading it costs nothing (the uri-list is local). An *old*
+  history entry for remote files fails to paste once its subtree is gone — expected.
+* **Watch, and note here:** does Dolphin/Klipper *read* files in the mount for previews
+  (`render requested … file_idx=` on B with no paste)? Does the mount show in Dolphin's Places?
+* **Lifecycle:** Ctrl-C or `kill <pid>` (SIGTERM) → the mount is gone from `/proc/mounts`.
+  `kill -9` → it is left stale ("Transport endpoint is not connected"); the next start logs
+  `clearing a stale inbound file mount`.
+* **Verified by Claude 2026-11-26, Linux → Linux** between two nodes in isolated headless KWin
+  sessions (`kwin_wayland --virtual`): 43 MB folder byte-identical (empty dir, non-ASCII name),
+  one job across all files; head moved between file 1 and file 2 — files 2–3 still intact;
+  SIGKILL → stale → cleared on restart; SIGINT/SIGTERM unmount; re-published promise ignored.
+  Windows → Linux and the Dolphin/Klipper points above still need a human.
 
 ### W4. Graceful failure, Qt budget
 Copy on A, kill A **before** pasting (and before Klipper caches it — copy a large image),
@@ -195,7 +219,7 @@ paste on B.
 - **Capture modes / eager threshold, safety levels, throttling** — M5.
 - **`clipline up` / status / toggles / tray** — M6.
 - **HTML / rich text** — M7.
-- **Linux (Wayland/X11) as either end** — M-Linux.
+- **Linux as either end** — Wayland ✅ (W0–W5); X11 is M-Linux ML.3.
 
 ## Known limits (by design — not bugs)
 
@@ -226,7 +250,8 @@ paste on B.
 | M-Linux | W0 live adapter tests | ✅ | 2026-11-22, Fedora 44 / KWin, 4/4 |
 | M-Linux | W1 text both ways | | one-session loopback ✅; two-machine pending |
 | M-Linux | W2 image both ways | | one-session loopback ✅ (byte-identical PNG); two-machine pending |
-| M-Linux | W3 files Linux → Windows | | |
+| M-Linux | W3 files Linux → Windows | ❌ | 2026-11-23 human: fails, undiagnosed. 2026-11-27 Claude: real Dolphin copy (headless KWin, D-Bus `edit_copy`) → real `clipline.exe` under Wine 11.21 → cross-process `FileGroupDescriptorW`/`FileContents` paste ✅ byte-identical — fault is specific to the real Windows box/Explorer; needs both debug logs |
 | M-Linux | W4 graceful failure | | |
+| M-Linux | W5 files into Linux (FUSE) | | Linux → Linux ✅ 2026-11-26 (isolated KWin); Windows → Linux + Dolphin pending |
 
 Date / boxes / build:
