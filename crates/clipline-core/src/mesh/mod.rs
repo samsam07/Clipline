@@ -375,12 +375,23 @@ async fn dial_loop(addr: SocketAddr, connector: TlsConnector, ctx: ConnCtx) {
         tokio::select! {
             _ = shutdown.changed() => return,
             res = attempt => match res {
-                Ok(tls) => {
-                    if handle_connection(tls, addr, true, ctx.clone()).await {
+                Ok(tls) => match handle_connection(tls, addr, true, ctx.clone()).await {
+                    ConnEnd::SelfConnection => {
                         tracing::debug!(%addr, "dialed our own listener; not retrying");
                         return;
                     }
-                }
+                    // The peer is already connected over the canonical connection (it
+                    // dialed us too, D9). Dialing again would just be rejected again —
+                    // wait until that connection ends, then reconnect as after a drop.
+                    ConnEnd::Duplicate(peer_id) => {
+                        tracing::debug!(%addr, peer = %peer_id, "peer already connected; dialing again once that connection ends");
+                        tokio::select! {
+                            _ = shutdown.changed() => return,
+                            _ = ctx.table.wait_until_gone(peer_id) => {}
+                        }
+                    }
+                    ConnEnd::Closed => {}
+                },
                 Err(e) => tracing::trace!(%addr, error = %e, "dial failed; will retry"),
             }
         }
@@ -444,15 +455,23 @@ where
     }
 }
 
-/// Handshake, register (dedup), then serve the connection until it ends. Returns `true`
-/// iff the peer turned out to be ourselves (a dialed self-connection — the dial loop
-/// stops retrying it).
+/// Why a control connection ended — the dial loop's next step depends on it.
+enum ConnEnd {
+    /// The peer is ourselves (we dialed our own listener): stop dialing that address.
+    SelfConnection,
+    /// Rejected by dedup (D9): this peer is already connected over a better connection.
+    Duplicate(OriginId),
+    /// Handshake failure, or a served connection that ended (EOF, liveness, superseded).
+    Closed,
+}
+
+/// Handshake, register (dedup), then serve the connection until it ends; see [`ConnEnd`].
 async fn handle_connection<S>(
     stream: S,
     addr: SocketAddr,
     initiated_by_us: bool,
     ctx: ConnCtx,
-) -> bool
+) -> ConnEnd
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -470,12 +489,12 @@ where
         Ok(pair) => pair,
         Err(e) => {
             tracing::debug!(%addr, error = %e, "handshake failed; closing");
-            return false;
+            return ConnEnd::Closed;
         }
     };
     if peer_id == my_id {
         tracing::debug!(%addr, "handshake revealed our own id; closing (self-connection)");
-        return true;
+        return ConnEnd::SelfConnection;
     }
 
     let (out_tx, out_rx) = mpsc::channel::<ControlMsg>(64);
@@ -491,7 +510,7 @@ where
         Registration::Accepted(id) => id,
         Registration::Rejected => {
             tracing::debug!(peer = %peer_id, %addr, "duplicate connection closed (dedup)");
-            return false;
+            return ConnEnd::Duplicate(peer_id);
         }
     };
     tracing::info!(peer = %peer_id, %addr, initiated_by_us, "peer connected");
@@ -517,7 +536,7 @@ where
 
     table.remove(peer_id, conn_id);
     tracing::info!(peer = %peer_id, %addr, "peer disconnected");
-    false
+    ConnEnd::Closed
 }
 
 /// Read frames until EOF, a codec error, or a liveness timeout (D7). `Offer`s and the head

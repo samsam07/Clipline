@@ -56,6 +56,9 @@ pub(crate) struct PeerTable {
     my_id: OriginId,
     map: Mutex<HashMap<OriginId, PeerEntry>>,
     next_conn_id: AtomicU64,
+    /// Woken whenever a peer leaves the table — what a dial loop whose connection lost
+    /// the dedup race waits on before dialing again (see [`Self::wait_until_gone`]).
+    removed: Notify,
 }
 
 impl PeerTable {
@@ -64,6 +67,7 @@ impl PeerTable {
             my_id,
             map: Mutex::new(HashMap::new()),
             next_conn_id: AtomicU64::new(1),
+            removed: Notify::new(),
         }
     }
 
@@ -140,6 +144,30 @@ impl PeerTable {
         let mut map = self.map.lock().expect("peer table lock");
         if map.get(&peer_id).is_some_and(|e| e.conn_id == conn_id) {
             map.remove(&peer_id);
+            self.removed.notify_waiters();
+        }
+    }
+
+    /// Resolve once `peer_id` has no connection in the table. A dial rejected by dedup
+    /// waits here: the peer is already connected over the canonical connection, so
+    /// dialing again before that one ends would only be rejected again (the 1 s redial
+    /// loop seen on the Windows ↔ Linux pair, 2026-11-27).
+    pub(crate) async fn wait_until_gone(&self, peer_id: OriginId) {
+        loop {
+            // Register for the wake-up *before* checking, so a removal between the
+            // check and the await is not missed.
+            let notified = self.removed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if !self
+                .map
+                .lock()
+                .expect("peer table lock")
+                .contains_key(&peer_id)
+            {
+                return;
+            }
+            notified.await;
         }
     }
 

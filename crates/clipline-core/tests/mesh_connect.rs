@@ -133,3 +133,87 @@ async fn one_sided_dial_still_connects() {
         "b should see a over its outbound connection",
     );
 }
+
+/// A TCP forwarder to `target` that counts every connection made through it.
+async fn counting_proxy(
+    target: SocketAddr,
+) -> (SocketAddr, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind proxy");
+    let addr = listener.local_addr().expect("proxy addr");
+    let count = std::sync::Arc::new(AtomicUsize::new(0));
+    let seen = count.clone();
+    tokio::spawn(async move {
+        while let Ok((mut inbound, _)) = listener.accept().await {
+            seen.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                if let Ok(mut outbound) = tokio::net::TcpStream::connect(target).await {
+                    let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                }
+            });
+        }
+    });
+    (addr, count)
+}
+
+/// Regression (2026-11-27, Windows ↔ Linux): when both nodes dial and the *other* side's
+/// connection wins dedup (D9 — the lower `origin_id`'s dial is canonical), the losing dial
+/// loop must wait for that connection to end, not redial every `RECONNECT_BACKOFF` forever
+/// (each redial a full TCP + TLS handshake, rejected on arrival).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn losing_dialer_does_not_redial_while_connected() {
+    use std::sync::atomic::Ordering;
+    let low = OriginId(1); // its dial is canonical
+    let high = OriginId(2); // its dial loses dedup
+
+    let a = Mesh::bind(0, low, None, None).await.expect("bind low");
+    let b = Mesh::bind(0, high, None, None).await.expect("bind high");
+    // `high` dials `low` through the counter; `low` dials `high` directly.
+    let (via_proxy, dials) = counting_proxy(loopback(a.local_addr())).await;
+    b.connect(vec![via_proxy]);
+    a.connect(vec![loopback(b.local_addr())]);
+
+    assert!(
+        eventually(
+            || a.peers()
+                .iter()
+                .any(|p| p.origin_id == high && p.initiated_by_us),
+            Duration::from_secs(10)
+        )
+        .await,
+        "the canonical connection (dialed by the lower id) should be the one kept",
+    );
+    // Let any in-flight dial settle, then watch a window several backoffs long.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let before = dials.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let after = dials.load(Ordering::SeqCst);
+    assert_eq!(
+        before,
+        after,
+        "the losing side redialed {} times in 4 s while already connected",
+        after - before
+    );
+    assert_eq!(
+        b.peers().len(),
+        1,
+        "still connected over the canonical connection"
+    );
+
+    // When the canonical connection ends, the waiting dial loop is woken and dials again.
+    drop(a);
+    assert!(
+        eventually(|| b.peers().is_empty(), Duration::from_secs(10)).await,
+        "high sees low leave",
+    );
+    assert!(
+        eventually(
+            || dials.load(Ordering::SeqCst) > after,
+            Duration::from_secs(5)
+        )
+        .await,
+        "after the canonical connection ends, the dial loop dials again",
+    );
+}
